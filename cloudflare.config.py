@@ -13,6 +13,9 @@ config = Config(
         env={
             "ArenaAgent": bindings.DurableObject("ArenaAgent"),
             "SwarmAgent": bindings.DurableObject("SwarmAgent"),
+            "AI": bindings.AI(),
+            # The Workers AI model the SwarmAgents' strategist calls; "" turns it off.
+            "STRATEGIST_MODEL": bindings.Text("@cf/zai-org/glm-4.7-flash"),
         },
         exports={
             "ArenaAgent": exports.DurableObject(),

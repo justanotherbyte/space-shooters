@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from workers.bindings import DurableObjectNamespace
+from workers.bindings import Binding, DurableObjectNamespace
 
 if TYPE_CHECKING:
     from main import ArenaAgent, SwarmAgent
@@ -12,3 +12,5 @@ if TYPE_CHECKING:
 class Env(Protocol):
     ArenaAgent: DurableObjectNamespace[ArenaAgent]
     SwarmAgent: DurableObjectNamespace[SwarmAgent]
+    AI: Binding
+    STRATEGIST_MODEL: str

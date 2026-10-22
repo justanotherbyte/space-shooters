@@ -362,7 +362,7 @@ function onEvent(ev: GameEvent, tick: number) {
       break;
     case "decision":
       debug.onDecision(ev);
-      if (ev.status === "applied" && ev.tactic) setTactic(ev.sw, ev.tactic, ev.note ?? "");
+      if (ev.status === "applied" && ev.tactic) setTactic(ev.sw, ev.tactic, ev.note ?? "", ev.source === "llm" ? ev.callout ?? "" : "");
       break;
   }
 }
@@ -379,8 +379,13 @@ function setPhase(p: Phase, w: number) {
   phase = p;
   $("wave").textContent = String(w);
 }
-const tacticWords: Record<string, string> = { assault: "Coordinated assault", flank: "Flanking", retreat: "Retreating", regroup: "Regrouping", idle: "Standby", none: "Standby" };
-function setTactic(sw: Swarm, tactic: string, note: string) {
+const tacticWords: Record<string, string> = {
+  assault: "Coordinated assault", flank: "Flanking", crossfire: "Crossfire", phalanx: "Shield wall", rush: "Rush",
+  kite: "Kiting", harass: "Hit and run", ambush: "Ambush", bait: "Baiting",
+  retreat: "Retreating", regroup: "Regrouping", idle: "Standby", none: "Standby",
+};
+// `callout` is the LLM strategist's radio line when its directive is in force.
+function setTactic(sw: Swarm, tactic: string, note: string, callout = "") {
   const el = $(`tac-${sw}`);
   const text = tacticWords[tactic] ?? tactic;
   if (el.textContent !== text) {
@@ -390,7 +395,9 @@ function setTactic(sw: Swarm, tactic: string, note: string) {
     void row.offsetWidth;
     row.classList.add("pulse");
   }
-  $(`note-${sw}`).textContent = note;
+  const noteEl = $(`note-${sw}`);
+  noteEl.textContent = callout ? `"${callout}"` : note;
+  noteEl.classList.toggle("llm", !!callout);
 }
 let bannerTimer = 0;
 function banner(title: string, sub: string, ms: number) {

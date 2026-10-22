@@ -58,8 +58,9 @@ ARCHETYPES = {
 }
 KINDS = ("striker", "sentinel")
 SWARMS = ("alpha", "bravo")
-MODES = ("fallback", "assault", "suppress", "flank", "retreat", "regroup", "hold")
-FIRING_MODES = {"fallback", "assault", "suppress", "hold"}
+# Append only: clients decode the mode by its index.
+MODES = ("fallback", "assault", "suppress", "flank", "retreat", "regroup", "hold", "rush")
+FIRING_MODES = {"fallback", "assault", "suppress", "hold", "rush"}
 
 
 def r2(v: float) -> float:
@@ -151,6 +152,7 @@ class World:
         # Cumulative per-swarm outcomes, read by the swarms to judge their tactics.
         self.swarm_stats = {s: {"dealt": 0, "taken": 0, "losses": 0, "spawned": 0} for s in SWARMS}
         self.tactics = {s: "none" for s in SWARMS}
+        self.callouts = {s: "" for s in SWARMS}  # each swarm's last radio line, heard by the other
         self.order_seq = {s: 0 for s in SWARMS}
         self.restored_hp: dict[str, int] = {}
 
@@ -275,7 +277,10 @@ class World:
             mine = [e for e in self.enemies.values() if e.swarm == other]
             cx = sum(e.body.x for e in mine) / len(mine) if mine else 0.0
             cz = sum(e.body.z for e in mine) / len(mine) if mine else 0.0
-            allies[other] = {"tactic": self.tactics[other], "alive": len(mine), "centroid": [r2(cx), r2(cz)]}
+            allies[other] = {
+                "tactic": self.tactics[other], "alive": len(mine), "centroid": [r2(cx), r2(cz)],
+                "callout": self.callouts[other],
+            }
         return {
             "v": 1, "swarm": swarm, "seq": seq, "tick": self.tick, "match": self.match,
             "wave": self.wave, "phase": self.phase, "units": units, "players": players,
@@ -298,6 +303,9 @@ class World:
         self.order_seq[swarm] = seq
         tactic = cmd.get("tactic")
         self.tactics[swarm] = tactic if isinstance(tactic, str) else "none"
+        callout = cmd.get("callout")
+        if isinstance(callout, str) and callout:
+            self.callouts[swarm] = callout[:70]
         orders = cmd.get("orders")
         if not isinstance(orders, dict):
             return "invalid"
@@ -472,11 +480,12 @@ class World:
 
         dx, dz = gx - b.x, gz - b.z
         dist = math.sqrt(dx * dx + dz * dz)
-        speed = e.a["speed"] * (1.2 if e.mode in ("retreat", "flank") else 1.0)
+        speed = e.a["speed"] * {"retreat": 1.2, "flank": 1.2, "rush": 1.3}.get(e.mode, 1.0)
         wx = wz = 0.0
         if dist > 1.2:
             wx, wz = dx / dist * speed, dz / dist * speed
-        if e.kind == "striker" and e.mode in ("assault", "fallback", "suppress", "hold") and target:
+        # Units holding a position (ambush, shield wall) stand still.
+        if e.kind == "striker" and e.mode in ("assault", "fallback", "suppress") and target:
             # Strafe across the line to the target, harder to hit.
             e.strafe_timer -= 1
             if e.strafe_timer <= 0:
@@ -626,6 +635,7 @@ class World:
         self.history.clear()
         self.wave = self.score = self.kills = 0
         self.tactics = {s: "none" for s in SWARMS}
+        self.callouts = {s: "" for s in SWARMS}  # each swarm's last radio line, heard by the other
         self.swarm_stats = {s: {"dealt": 0, "taken": 0, "losses": 0, "spawned": 0} for s in SWARMS}
         for p in self.players.values():
             p.respawn(PLAYER_HP)

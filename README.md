@@ -50,6 +50,9 @@ browser ──WebSocket──▶ ArenaAgent "{room}"            (Durable Object,
                           ├─ RPC decide(obs) ──▶ SwarmAgent "{room}-alpha"
                           │  every 500 ms   ◀── command (tactic + per-unit orders)
                           └─ RPC decide(obs) ──▶ SwarmAgent "{room}-bravo"
+                                                      │ every ~6 s, in the background
+                                                      └─▶ Workers AI (env.AI): battle report in,
+                                                          strategy directive + radio callout out
 debug overlay ──WebSocket──▶ SwarmAgent (read-only view of its memory)
 ```
 
@@ -78,18 +81,59 @@ The swarm never writes to the world. Its command is applied only through `World.
 
 Within an accepted command, the arena drops orders for units the swarm doesn't own, and clamps every path point into the arena. Calls are fire-and-forget. A reply is applied at the start of the next tick, and a swarm with a call in flight is skipped. A slow or failed swarm never blocks the loop. A unit whose orders are more than 2 s old falls back to local behavior: it closes to its preferred range, strafes and fires.
 
-The tactics are deterministic:
+Each swarm fights with nine engagement tactics, plus retreat and regroup. `plan_orders` in `src/tactics.py` has one planner per tactic, and every planner is deterministic:
 
-| Tactic | When | What the units do |
+| Tactic | Units needed | What the units do |
 |---|---|---|
-| Coordinated assault | Default for alpha. Chosen when the other swarm is flanking, or when the swarm has fewer than 3 units. | Units take slots spread over an arc of up to 300° around the player, assigned in angular order so paths don't cross. Sentinels hold 8 m further out and suppress. |
-| Flank | Default for bravo. Chosen when the other swarm is pressing, or when the player is camping. Needs at least 3 units. | Sentinels and the nearest third of the Strikers pin from the current side with faster, looser fire. The rest swing wide via a waypoint without firing, on the side away from the other swarm, so the two close a pincer. When they arrive they switch to assault. |
-| Retreat | The swarm is down to half its peak strength, or its armor is under 30%. | All units fall back to the rally point farthest from the player. Sentinels give covering fire. |
-| Regroup | After a retreat. | Units ring the rally point and defend it, then re-engage with their strength baseline reset. |
+| Coordinated assault | 1 | Units take slots spread over an arc of up to 300° around the player, assigned in angular order so paths don't cross. Sentinels hold 8 m further out and suppress. |
+| Flank | 3 | Sentinels and the nearest third of the Strikers pin from the current side with faster, looser fire. The rest swing wide via a waypoint without firing, on the side away from the other swarm, so the two close a pincer. When they arrive they switch to assault. |
+| Crossfire | 4 | Two fire teams set up 90° apart, so their fire crosses on the player. |
+| Shield wall | 3, at least one a Sentinel | Strikers hold a still line at the engagement range. Sentinels suppress from 5 m behind it. |
+| Rush | 1 | Every unit charges straight in to point-blank range at 1.3× speed, firing. |
+| Kite | 1 | Units hold at 22 m or more (Sentinels at 30 m) in a wide arc with suppressing fire. Their slots move with the player, so they back off as it advances. |
+| Hit and run | 4 | Two waves alternate every 4 s: one darts in to 6 m while the other covers from range. |
+| Ambush | 1 | Units hide behind the tallest cover 6–26 m from the player and stand still. They fire only when the player walks into view. |
+| Bait | 3 | The healthiest Striker charges the player and runs back to the rest, waiting in a firing line. |
+| Retreat | | The swarm is down to half its peak strength, or its armor is under 30%. All units fall back to the rally point farthest from the player. Sentinels give covering fire. |
+| Regroup | | After a retreat, units ring the rally point and defend it, then re-engage with their strength baseline reset. |
+
+The rules score every tactic the swarm has the units for:
+
+- **Record:** each tactic's trade score from past episodes (damage dealt minus 25 per unit lost).
+- **Temperament:** alpha leans toward assault, crossfire, rush and shield wall. Bravo leans toward flank, ambush, bait and hit and run.
+- **The other swarm:** while it applies pressure, maneuvers (flank, ambush, bait) score higher. While it maneuvers, pressure tactics score higher.
+- **The player:** a camping player invites a flank or bait. A moving player walks into ambushes. A player at 35 health or less invites a rush. Losing close trades favors kiting.
+- **Variety:** the tactic that just ended scores lower. So does one that has landed nothing for 10 s.
+
+A tactic is kept for at least 6 s, unless the swarm loses the units it needs.
 
 The SwarmAgent's SDK state is its memory: last known player position and track, a camping score, preferred engagement range (it widens after bad trades and narrows after good ones), current formation and roles, recent decisions with reasons, and a trade score per tactic built from past outcomes, which tips later choices. The memory is stored after every decision. Starting a new match clears the fight but keeps the learned trade scores, range and player model.
 
-`select_tactic` is separate from `plan_orders`. An LLM strategist could replace `select_tactic` alone; the per-unit orders it leads to stay deterministic, and the arena still validates them.
+`select_tactic` is separate from `plan_orders`, and that is where the LLM strategist plugs in.
+
+### LLM strategist (`src/strategist.py`)
+
+Each SwarmAgent asks a Workers AI model for a strategy about every 6 s while a wave is on, and right away when the rules force a retreat. `decide` starts the call in the background and returns at once, so the arena never waits on the model. The model gets a compact battle report:
+
+- its units by kind and health, and which tactics it has the units for
+- the players' positions, health and speed, and how much they camp
+- its trade record per tactic and recent outcomes
+- the other swarm's tactic and its last radio callout
+
+It answers with JSON constrained by a schema: a tactic (any of the nine above, or retreat), a flank side, an engagement range, a callout to the other swarm, and a one-line reason. `parse_directive` treats that reply as untrusted. It rejects anything off-schema, clamps the range to 9–22 m and trims the text. The validated directive goes into the swarm's memory and steers `select_tactic` for 12 s.
+
+The rules stay in charge of safety:
+
+- A swarm at half strength or under 30% armor retreats whatever the model says.
+- The model can call a retreat only for a swarm that has lost units.
+- A tactic the swarm lacks the units for falls back to the rules' choice.
+- Per-unit orders are still computed by `plan_orders` and validated by the arena.
+
+A missing, late, failed or invalid reply only means the rules choose, as they did before the strategist existed. Each decision event says whether the directive or the rules picked the tactic (`source`). The HUD shows the model's callout with an `LLM` badge when its directive is in force. F3 shows the model, call count, failures, latency, the last error, and the directive with its reason.
+
+The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudflare.config.py`. Set it to `""` to turn the strategist off. In local dev, restart `npm run worker` after changing it. Workers AI runs on Cloudflare even in local dev, so `npm run worker` needs `npx wrangler login`, and calls count against your Workers AI usage. Its thinking mode is turned off: with it on, the model spent its whole token budget reasoning and never answered. A reply takes about 2 s. Each call is about 400 input and 100 output tokens, two swarms at one call per 6 s each.
+
+`@cf/zai-org/glm-5.3-flash` is stronger but not available on the Workers Free plan. Any Workers AI model that supports `response_format: json_schema` works.
 
 ### What is stored, and what isn't
 
@@ -97,7 +141,7 @@ The SwarmAgent's SDK state is its memory: last known player position and track, 
 |---|---|---|
 | Snapshots and events | `broadcast()`, never stored | 20 Hz |
 | Match checkpoint (match id, phase, wave, score, kills, best, player HP, tick) | `ArenaAgent.set_state`, SQLite, synced to clients as `cf_agent_state` | On every phase change and every 5 s |
-| Tactical memory | `SwarmAgent.set_state`, SQLite | Once per decision (2 Hz per swarm) |
+| Tactical memory, including the strategist's directive and call stats | `SwarmAgent.set_state`, SQLite | Once per decision (2 Hz per swarm), and when a strategist reply lands |
 
 When a Durable Object is evicted, the arena restores the checkpoint on its next start. The match id, score and tick carry over, and the interrupted wave restarts when the player rejoins. Enemies and projectiles aren't checkpointed. Saving them would mean a SQLite write per tick.
 
@@ -136,6 +180,7 @@ Rapier handles the client's collision queries against the level, such as where a
 ```sh
 uv run python tests/test_sim.py     # movement, order validation, a 4-minute bot battle, checkpoint restore, co-op
 uv run python tests/test_mirror.py  # physics.ts matches physics.py over 100 s of random input
+uv run python tests/test_strategist.py  # reply validation, directives steering the rules, safety rules winning
 node tests/e2e.mjs                  # against a running worker: tick rate, hostile input, rate limit, reconnect, two players
 ```
 
@@ -147,7 +192,8 @@ src/main.py            Entry: routes /agents/* with route_agent_request
 src/arena.py           ArenaAgent: loop, protocol, swarm calls, checkpoints
 src/sim.py             The authoritative World
 src/swarm.py           SwarmAgent: decide() over RPC, memory in SDK state
-src/tactics.py         Deterministic swarm tactics
+src/tactics.py         Deterministic swarm tactics, steered by the strategist's directive
+src/strategist.py      LLM strategist: prompt, battle report, reply validation
 src/physics.py         Movement, collision and ray casts
 src/level.py           Arena geometry, sent to clients in welcome
 web/src/main.ts        Game loop: prediction, reconciliation, interpolation, events

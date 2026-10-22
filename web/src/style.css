@@ -53,6 +53,8 @@ label { display: block; font-size: 11px; letter-spacing: 0.18em; text-transform:
 .swarm.alpha .tactic { color: var(--magenta); }
 .swarm.bravo .tactic { color: var(--blue); }
 .swarm .note { grid-column: 1 / -1; font-size: 13px; color: var(--ink); opacity: 0.85; min-height: 1.2em; }
+.swarm .note.llm { font-style: italic; opacity: 1; }
+.swarm .note.llm::before { content: "LLM"; font: 600 9px "JetBrains Mono", monospace; font-style: normal; letter-spacing: 0.1em; color: var(--bg); background: var(--sw); padding: 1px 4px; margin-right: 8px; vertical-align: 2px; }
 .swarm.pulse { animation: pulse 0.6s ease-out; }
 @keyframes pulse { from { background: rgba(255, 255, 255, 0.18); } }
 

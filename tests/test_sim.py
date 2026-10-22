@@ -107,8 +107,9 @@ def test_battle():
     assert {"spawn", "proj", "pend", "hit", "death", "wave", "dmg"} <= kinds, kinds
     assert w.kills >= 5
     every = set().union(*seen_tactics.values())
-    assert {"assault", "flank"} <= every, every
-    assert "retreat" in every, every
+    assert {"assault", "flank", "retreat"} <= every, every
+    engaged = every & set(tactics.ENGAGE)
+    assert len(engaged) >= 6, f"the rules should vary their tactics, used {sorted(engaged)}"
 
 
 def test_restore():

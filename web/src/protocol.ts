@@ -6,7 +6,7 @@ export const TICK_MS = 50;
 
 export const KINDS = ["striker", "sentinel"] as const;
 export const SWARMS = ["alpha", "bravo"] as const;
-export const MODES = ["fallback", "assault", "suppress", "flank", "retreat", "regroup", "hold"] as const;
+export const MODES = ["fallback", "assault", "suppress", "flank", "retreat", "regroup", "hold", "rush"] as const;
 export type Kind = (typeof KINDS)[number];
 export type Swarm = (typeof SWARMS)[number];
 export type Mode = (typeof MODES)[number];
@@ -47,6 +47,7 @@ export type GameEvent =
   | {
       k: "decision"; sw: Swarm; seq: number | null; status: string; tactic: string | null;
       formation: string | null; note: string | null; engage: number | null; ms: number; age: number;
+      source: "llm" | "rules" | null; callout: string | null; reason: string | null;
       orders: Record<string, Order>;
     };
 

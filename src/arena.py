@@ -209,6 +209,7 @@ class ArenaAgent(Agent[dict]):
             self.world.events.append({
                 "k": "decision", "sw": swarm, "seq": cmd.get("seq"), "status": status,
                 "tactic": cmd.get("tactic"), "formation": cmd.get("formation"), "note": cmd.get("note"),
+                "source": cmd.get("source"), "callout": cmd.get("callout"), "reason": cmd.get("reason"),
                 "engage": cmd.get("engage"), "ms": round(ms), "age": self.world.tick - (cmd.get("tick") or 0),
                 "orders": {
                     k: {"mode": o.get("mode"), "role": o.get("role"), "path": o.get("path")}
