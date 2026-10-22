@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crosswind Swarm</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud">
+      <div id="crosshair"><i></i><i></i><i></i><i></i></div>
+      <div id="hitmarker"></div>
+      <div id="damage"></div>
+      <div id="dmg-dirs"></div>
+
+      <div id="stats" class="panel">
+        <div><label>Wave</label><b id="wave">0</b></div>
+        <div><label>Score</label><b id="score">0</b></div>
+        <div><label>Kills</label><b id="kills">0</b></div>
+        <div><label>Hostiles</label><b id="hostiles">0</b></div>
+        <div><label>Squad</label><b id="squad">1</b></div>
+      </div>
+
+      <div id="ticker">
+        <div class="swarm alpha"><span class="tag">SwarmAgent α</span><span class="tactic" id="tac-alpha">standby</span><span class="note" id="note-alpha"></span></div>
+        <div class="swarm bravo"><span class="tag">SwarmAgent β</span><span class="tactic" id="tac-bravo">standby</span><span class="note" id="note-bravo"></span></div>
+      </div>
+
+      <div id="health" class="panel">
+        <label>Integrity</label>
+        <div class="bar"><div id="hp-fill"></div><div id="hp-lag"></div></div>
+        <b id="hp-text">100</b>
+      </div>
+
+      <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
+      <div id="feed"></div>
+      <div id="link">Link lost · resyncing with ArenaAgent</div>
+      <div id="hint">F3 agent telemetry · F4 tactical overlay</div>
+    </div>
+
+    <div id="debug" class="panel" hidden>
+      <h3>Agent telemetry</h3>
+      <div id="debug-body"></div>
+    </div>
+    <div id="labels"></div>
+    <div id="allies"></div>
+
+    <section class="screen" id="start">
+      <div class="card">
+        <p class="kicker">Python Agents on Cloudflare Workers</p>
+        <h1>Crosswind<span>Swarm</span></h1>
+        <p class="lede">Two persistent SwarmAgents coordinate the robots that hunt you. A Python ArenaAgent runs the world at 20&nbsp;Hz. Survive the waves.</p>
+        <div class="meta"><span>Room <b id="room-name"></b></span><span id="link-state">Connecting…</span></div>
+        <button id="deploy" disabled>Deploy</button>
+        <button class="ghost invite" id="invite">Copy invite link</button>
+        <dl class="keys">
+          <div><dt>WASD</dt><dd>Move</dd></div>
+          <div><dt>Mouse</dt><dd>Aim · fire</dd></div>
+          <div><dt>Space</dt><dd>Jump</dd></div>
+          <div><dt>Shift</dt><dd>Sprint</dd></div>
+          <div><dt>Esc</dt><dd>Pause</dd></div>
+          <div><dt>F3 / F4</dt><dd>Telemetry · tactics</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="screen" id="pause" hidden>
+      <div class="card">
+        <p class="kicker" id="pause-note">Simulation paused on the server</p>
+        <h2>Paused</h2>
+        <button id="resume">Resume</button>
+        <div class="row">
+          <button class="ghost" id="toggle-debug">Agent telemetry</button>
+          <button class="ghost" id="toggle-viz">Tactical overlay</button>
+        </div>
+        <p class="small">Anyone who opens this URL joins your squad. Reloading resumes the match from the ArenaAgent.</p>
+      </div>
+    </section>
+
+    <section class="screen" id="over" hidden>
+      <div class="card">
+        <p class="kicker">Integrity lost</p>
+        <h2>Game over</h2>
+        <div class="results">
+          <div><label>Score</label><b id="over-score">0</b></div>
+          <div><label>Wave</label><b id="over-wave">0</b></div>
+          <div><label>Kills</label><b id="over-kills">0</b></div>
+          <div><label>Best</label><b id="over-best">0</b></div>
+        </div>
+        <button id="restart">Redeploy</button>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

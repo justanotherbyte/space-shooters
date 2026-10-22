@@ -1,0 +1,7 @@
+.venv/
+.wynd/
+node_modules/
+dist/
+.wrangler/
+.impeccable/
+__pycache__/
