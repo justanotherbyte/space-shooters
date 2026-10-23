@@ -79,10 +79,10 @@ class ArenaAgent(Agent[dict]):
             frames = msg.get("f")
             if isinstance(frames, list) and len(frames) <= 12:
                 self.world.queue_inputs(pid, [f for f in map(_frame, frames) if f])
-        elif kind == "fire":
+        elif kind in ("fire", "stab"):
             d, rt = msg.get("d"), msg.get("rt")
             if isinstance(d, list) and len(d) == 3 and all(map(_num, d)) and _num(rt):
-                self.world.fire(pid, d[0], d[1], d[2], rt)
+                (self.world.fire if kind == "fire" else self.world.stab)(pid, d[0], d[1], d[2], rt)
         elif kind == "pause":
             player = self.world.players.get(pid)
             if player:

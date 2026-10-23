@@ -60,5 +60,8 @@ export const sfx = {
   boom(dist: number) { const v = Math.max(0.08, 0.6 - dist * 0.012); hiss(1.1, v, 220, 0.6); tone("sine", 110, 28, 0.9, v); },
   smoke(dist: number) { hiss(1.6, Math.max(0.03, 0.22 - dist * 0.005), 2400, 0.4); },
   clank(dist: number) { tone("square", 900, 600, 0.06, Math.max(0.02, 0.12 - dist * 0.004)); },
+  slash() { hiss(0.14, 0.22, 2600, 0.8); tone("sine", 900, 300, 0.1, 0.05); },
+  // A blade whipping around a finger, at `times` seconds from now.
+  whirl(times: number[]) { for (const t of times) tone("triangle", 500, 1400, 0.12, 0.05, t); },
   snap() { tone("sawtooth", 1800, 200, 0.12, 0.3); hiss(0.2, 0.3, 4000); },
 };

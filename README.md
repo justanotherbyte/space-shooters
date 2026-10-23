@@ -28,7 +28,7 @@ Anyone who opens the same room URL joins your squad. **Copy invite link** on the
 - The world pauses only when every player has paused. A paused player can't be targeted or hit, so pausing in co-op takes you out of the fight without stopping it.
 - Each tab is one player. A duplicated tab copies the original's player id, so when it joins, the server hands that player to the new tab and the original takes a fresh id.
 
-Controls: WASD to move, the mouse to aim, left click to fire, hold right click to scope in (about 2.8× zoom, with slower mouse aim), Space to jump, Shift to sprint, Esc to pause. F3 opens agent telemetry. F4 toggles the tactical overlay.
+Controls: WASD to move, the mouse to aim, left click to fire, hold right click to scope in (about 2.8× zoom, with slower mouse aim), Q to switch between the rifle and a karambit (left click stabs), F to inspect the karambit, Space to jump, Shift to sprint, Esc to pause. F3 opens agent telemetry. F4 toggles the tactical overlay.
 
 ## Deploy to Cloudflare
 
@@ -232,6 +232,7 @@ Client to server:
 | `join` | `v`, `pid` | Join or rejoin as `pid`. Answered with `welcome`, a full resync. A wrong `v` gets `error` and a close. |
 | `in` | `f: [[seq, keys, yaw, pitch], ...]` | Input frames at 60 per second, sent in batches every 33 ms. |
 | `fire` | `d: [x, y, z]`, `rt` | Aim direction, plus the interpolated tick the client was rendering. |
+| `stab` | `d: [x, y, z]`, `rt` | A knife thrust, as `fire` but with 2.6 m of reach and 45 damage (crits ×1.6). The server allows one every 0.45 s. |
 | `pause` | `on` | The world freezes when every connected player is paused. |
 | `restart` | | Start a new match after game over. |
 | `ping` | `c` | Answered with `pong` carrying the same `c`. |
@@ -282,6 +283,7 @@ web/src/mechs.ts       Procedural Striker and Sentinel frames (and allies), and 
 web/src/weapon.ts      First-person anime energy rifle
 web/src/fx.ts          Sparks, explosions, bolts, beams, drop-ins, destruction
 web/src/gear.ts        Swarm gear: thrown canisters, frag warnings, smoke clouds, spike traps
+web/src/knife.ts       The karambit: draw, slash and inspect animations
 web/src/debug.ts       F3 telemetry (connects to the SwarmAgents) and F4 overlay
 web/src/audio.ts       Synthesized sound
 ```

@@ -13,6 +13,7 @@ import { Net } from "./net";
 import * as physics from "./physics";
 import { KINDS, MODES, PLAYER_COLOR, SWARMS, SWARM_COLORS, TICK_MS } from "./protocol";
 import type { EnemyRow, GameEvent, GearKind, Kind, Phase, PlayerRow, Snapshot, Swarm, Welcome } from "./protocol";
+import { Knife } from "./knife";
 import { Rifle } from "./weapon";
 
 await RAPIER.init();
@@ -20,6 +21,8 @@ await RAPIER.init();
 const INTERP_TICKS = 2;
 const EYE = 1.6;
 const SHOT_MS = 140;
+const STAB_MS = 450; // as KNIFE_TICKS in src/sim.py
+const SWAP_S = 0.4; // put one weapon away (first 0.15 s), bring the other up
 const BASE_FOV = 78;
 const SCOPE_FOV = 28; // about 2.8x
 // Hit spheres per kind, as in src/sim.py: [height, radius].
@@ -96,6 +99,7 @@ const rapier = new RAPIER.World({ x: 0, y: -18, z: 0 });
 const fx = new Fx(scene, rapier);
 const gear = new Gear(scene, fx);
 const rifle = new Rifle(rig);
+const knife = new Knife(rig);
 const controls = new PointerLockControls(camera, renderer.domElement);
 const debug = new Debug(scene, room);
 
@@ -113,6 +117,8 @@ let deployed = false;
 let paused = false;
 let firing = false;
 let scoping = false;
+let weapon: "rifle" | "knife" = "rifle";
+let swapT = SWAP_S; // seconds into a weapon swap
 let zoom = 0; // 0 at the hip, 1 fully scoped
 let nextShot = 0;
 let shake = 0;
@@ -514,6 +520,10 @@ function damageArrow(fx_: number, fz: number) {
 addEventListener("keydown", (e) => {
   if (e.code === "F3") { e.preventDefault(); debug.togglePanel(); return; }
   if (e.code === "F4") { e.preventDefault(); debug.toggleViz(); return; }
+  if (controls.isLocked && !e.repeat && e.code === "KeyQ" && swapT >= SWAP_S) swapT = 0;
+  if (controls.isLocked && !e.repeat && e.code === "KeyF" && weapon === "knife" && swapT >= SWAP_S && knife.inspect()) {
+    sfx.whirl([0.5, 0.95, 1.35]); // once per pass around the finger
+  }
   keys.add(e.code);
   if (e.code === "Space") e.preventDefault();
 });
@@ -529,7 +539,11 @@ addEventListener("mouseup", (e) => {
   if (e.button === 2) scoping = false;
 });
 addEventListener("contextmenu", (e) => e.preventDefault());
-addEventListener("mousemove", (e) => { if (controls.isLocked) rifle.look(e.movementX, e.movementY); });
+addEventListener("mousemove", (e) => {
+  if (!controls.isLocked) return;
+  rifle.look(e.movementX, e.movementY);
+  knife.look(e.movementX, e.movementY);
+});
 
 function inputBits() {
   let k = 0;
@@ -605,6 +619,15 @@ function shoot() {
   fx.shot(muzzle, end, PLAYER_COLOR);
   shake = Math.min(1, shake + 0.05);
   if (!enemyHit && t < 150) fx.impact(end, PLAYER_COLOR);
+}
+
+// The knife: a short thrust the server resolves, like a shot with 2.6 m of reach.
+function stab() {
+  const dir = camera.getWorldDirection(new THREE.Vector3());
+  net.send({ t: "stab", d: [dir.x, dir.y, dir.z], rt: renderTick() });
+  knife.slash();
+  sfx.slash();
+  shake = Math.min(1, shake + 0.04);
 }
 
 const tagPos = new THREE.Vector3();
@@ -689,9 +712,9 @@ function frame(now: number) {
       net.send({ t: "in", f: outbox.splice(0, 12) });
       lastSend = now;
     }
-    if (firing && hp > 0 && now >= nextShot) {
-      nextShot = now + SHOT_MS;
-      shoot();
+    if (firing && hp > 0 && now >= nextShot && swapT >= SWAP_S) {
+      nextShot = now + (weapon === "rifle" ? SHOT_MS : STAB_MS);
+      if (weapon === "rifle") shoot(); else stab();
     }
   } else {
     acc = 0;
@@ -703,7 +726,7 @@ function frame(now: number) {
   camera.position.set(cam.x + (Math.random() - 0.5) * shake * 0.12, cam.y + (Math.random() - 0.5) * shake * 0.12, cam.z);
   // Hold right mouse to scope in: the world zooms, the rifle rises to the eye,
   // then the scope's lens takes over. Mouse speed scales with the zoom.
-  zoom += ((scoping && active && hp > 0 ? 1 : 0) - zoom) * Math.min(1, dt * 12);
+  zoom += ((scoping && active && hp > 0 && weapon === "rifle" ? 1 : 0) - zoom) * Math.min(1, dt * 12);
   if (zoom < 0.001) zoom = 0;
   const ease = zoom * zoom * (3 - 2 * zoom);
   const fov = BASE_FOV + (SCOPE_FOV - BASE_FOV) * ease;
@@ -712,6 +735,19 @@ function frame(now: number) {
     camera.updateProjectionMatrix();
   }
   controls.pointerSpeed = fov / BASE_FOV;
+  // Swapping: the weapon in hand drops away, then the other comes up.
+  if (swapT < SWAP_S) {
+    const was = swapT;
+    swapT = Math.min(SWAP_S, swapT + dt);
+    if (was < 0.15 && swapT >= 0.15) {
+      weapon = weapon === "rifle" ? "knife" : "rifle";
+      if (weapon === "knife") { knife.draw(); sfx.whirl([0.15]); }
+    }
+  }
+  const down = swapT < 0.15 ? swapT / 0.15 : 0;
+  const up = swapT < 0.15 ? 0 : 1 - (swapT - 0.15) / (SWAP_S - 0.15);
+  rifle.lowered = weapon === "rifle" ? Math.max(down, up) : 1;
+  knife.lowered = weapon === "knife" ? (swapT < 0.15 ? down : 0) : 1; // the knife's draw brings it up
   rifle.aim(ease);
   const lens = Math.min(1, Math.max(0, (zoom - 0.75) / 0.25));
   $("scope").style.opacity = String(lens);
@@ -754,6 +790,7 @@ function frame(now: number) {
   $("nade").hidden = !nade;
   if (nade) ($("nade").firstElementChild as HTMLElement).style.transform = `rotate(${Math.atan2(nade.x - me.x, -(nade.z - me.z)) + camera.rotation.y}rad)`;
   rifle.update(dt, Math.hypot(me.vx, me.vz), me.ground);
+  knife.update(dt, Math.hypot(me.vx, me.vz), me.ground);
   debug.update(units, playerPos.set(me.x, me.y, me.z), camera, net.rtt, INTERP_TICKS * TICK_MS);
   composer.render(dt);
 }

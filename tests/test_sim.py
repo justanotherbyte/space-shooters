@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import physics  # noqa: E402
 import tactics  # noqa: E402
-from sim import DT, SWARMS, World  # noqa: E402
+from sim import DT, EYE, KNIFE_DAMAGE, KNIFE_TICKS, SWARMS, Enemy, World  # noqa: E402
 
 
 def test_movement():
@@ -37,6 +37,24 @@ def test_movement():
     for _ in range(120):
         physics.step_player(b, 0, 0.0)
     assert b.ground and b.y == 0.0
+
+
+def test_knife():
+    w = World(seed=3)
+    p = w.add_player("p1")
+    e = Enemy(99, "striker", "alpha", 0.0, -1.6)
+    e.spawning = 0
+    e.body.y = p.body.y
+    w.enemies[e.id] = e
+    chest = (0.0, 0.95 - EYE, -1.6)  # from the eye to the striker's chest
+    w.stab("p1", *chest, w.tick)
+    assert e.hp == 60 - KNIFE_DAMAGE
+    w.stab("p1", *chest, w.tick)  # too soon after the first
+    assert e.hp == 60 - KNIFE_DAMAGE
+    w.tick += KNIFE_TICKS
+    e.body.z = -6.0  # out of reach
+    w.stab("p1", 0.0, 0.95 - EYE, -6.0, w.tick)
+    assert e.hp == 60 - KNIFE_DAMAGE and not any(ev["k"] == "shot" for ev in w.events)
 
 
 def test_orders_validation():

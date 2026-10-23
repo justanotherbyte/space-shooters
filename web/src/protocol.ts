@@ -108,6 +108,7 @@ export type ClientMessage =
   | { t: "join"; v: number; pid: string }
   | { t: "in"; f: [number, number, number, number][] }
   | { t: "fire"; d: [number, number, number]; rt: number }
+  | { t: "stab"; d: [number, number, number]; rt: number }
   | { t: "pause"; on: boolean }
   | { t: "restart" }
   | { t: "ping"; c: number };

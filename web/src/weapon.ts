@@ -22,6 +22,8 @@ export class Rifle {
   private bob = 0;
   private sway = new THREE.Vector2();
   private aimK = 0;
+  /** 0 in hand, 1 put away (hidden). */
+  lowered = 0;
   private hip = new THREE.Vector3(0.26, -0.25, -0.4);
   private hipRot = new THREE.Euler(0.06, 0.035, -0.04);
   // Raised to the eye, the gold sight on top lines up with the screen's center.
@@ -105,8 +107,9 @@ export class Rifle {
   aim(k: number) {
     this.aimK = k;
     this.root.position.lerpVectors(this.hip, this.ads, k);
-    this.root.rotation.set(this.hipRot.x * (1 - k), this.hipRot.y * (1 - k), this.hipRot.z * (1 - k));
-    this.root.visible = k < 0.92; // the scope overlay takes over
+    this.root.rotation.set(this.hipRot.x * (1 - k) - this.lowered * 0.6, this.hipRot.y * (1 - k), this.hipRot.z * (1 - k));
+    this.root.position.y -= this.lowered * 0.4;
+    this.root.visible = k < 0.92 && this.lowered < 1; // the scope overlay takes over
   }
 
   muzzle(out: THREE.Vector3) {

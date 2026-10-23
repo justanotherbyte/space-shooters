@@ -43,6 +43,9 @@ PLAYER_HEIGHT = 1.8
 SHOT_INTERVAL = 0.14
 SHOT_DAMAGE = 22
 SHOT_RANGE = 150.0
+KNIFE_RANGE = 2.6  # from the eye
+KNIFE_DAMAGE = 45
+KNIFE_TICKS = 9  # 0.45 s between stabs
 
 # hit: (height of sphere center, radius, damage multiplier)
 ARCHETYPES = {
@@ -102,6 +105,7 @@ class Player:
         self.ack = 0  # newest input applied
         self.budget = MAX_INPUT_BUDGET
         self.shots = 2.0
+        self.knife_at = 0  # the tick the player can stab again
         self.paused = False
         self.connected = True
 
@@ -217,14 +221,37 @@ class World:
         player = self.players.get(pid)
         if player is None or not player.alive or self.phase == "over" or player.shots < 1:
             return
-        n = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if n < 1e-6:
+        trace = self._trace(player, dx, dy, dz, render_tick, SHOT_RANGE)
+        if trace is None:
             return
         player.shots -= 1
+        origin, end, hit, mult = trace
+        self.events.append({"k": "shot", "pid": pid, "o": origin, "e": end})
+        if hit is not None:
+            self._strike(pid, hit, round(SHOT_DAMAGE * mult), mult, end)
+
+    def stab(self, pid: str, dx: float, dy: float, dz: float, render_tick: float) -> None:
+        """A knife thrust along the view: short reach, heavy damage, no ammo."""
+        player = self.players.get(pid)
+        if player is None or not player.alive or self.phase == "over" or self.tick < player.knife_at:
+            return
+        trace = self._trace(player, dx, dy, dz, render_tick, KNIFE_RANGE)
+        if trace is None:
+            return
+        player.knife_at = self.tick + KNIFE_TICKS
+        _, end, hit, mult = trace
+        if hit is not None:
+            self._strike(pid, hit, round(KNIFE_DAMAGE * mult), mult, end)
+
+    def _trace(self, player: Player, dx, dy, dz, render_tick: float, reach: float):
+        """The first wall or enemy along the player's view: (origin, end, enemy or None, damage multiplier)."""
+        n = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if n < 1e-6:
+            return None
         dx, dy, dz = dx / n, dy / n, dz / n
         b = player.body
         ox, oy, oz = b.x, b.y + EYE, b.z
-        best = ray_level(ox, oy, oz, dx, dy, dz, SHOT_RANGE)
+        best = ray_level(ox, oy, oz, dx, dy, dz, reach)
         rewind = self._positions_at(render_tick)
         hit, mult = None, 1.0
         # Every hit sphere of every enemy (rewound to what the shooter saw), in one test.
@@ -240,17 +267,15 @@ class World:
             if t[i] < best:
                 best, hit, mult = float(t[i]), spheres[i][0], spheres[i][1]
         end = [r2(ox + dx * best), r2(oy + dy * best), r2(oz + dz * best)]
-        self.events.append({"k": "shot", "pid": pid, "o": [r2(ox), r2(oy), r2(oz)], "e": end})
-        if hit is not None:
-            dmg = round(SHOT_DAMAGE * mult)
-            hit.hp -= dmg
-            self.swarm_stats[hit.swarm]["taken"] += dmg
-            killed = hit.hp <= 0
-            self.events.append(
-                {"k": "hit", "pid": pid, "id": hit.id, "dmg": dmg, "crit": mult > 1, "kill": killed, "p": end}
-            )
-            if killed:
-                self._kill(hit, pid)
+        return [r2(ox), r2(oy), r2(oz)], end, hit, mult
+
+    def _strike(self, pid: str, hit: "Enemy", dmg: int, mult: float, end: list) -> None:
+        hit.hp -= dmg
+        self.swarm_stats[hit.swarm]["taken"] += dmg
+        killed = hit.hp <= 0
+        self.events.append({"k": "hit", "pid": pid, "id": hit.id, "dmg": dmg, "crit": mult > 1, "kill": killed, "p": end})
+        if killed:
+            self._kill(hit, pid)
 
     def _positions_at(self, render_tick: float) -> dict:
         if not math.isfinite(render_tick):
