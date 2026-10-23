@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import RAPIER from "@dimforge/rapier3d-compat";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
-import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, ToneMappingEffect, ToneMappingMode, VignetteEffect } from "postprocessing";
-import { buildArena, neonEnvironment, type Arena } from "./arena";
+import { BloomEffect, BrightnessContrastEffect, EffectComposer, EffectPass, HueSaturationEffect, RenderPass, SMAAEffect, ToneMappingEffect, ToneMappingMode, VignetteEffect } from "postprocessing";
+import { buildArena, bioEnvironment, type Arena } from "./arena";
+import { PALETTE } from "./bio";
+import { Explorer, createCreature, type Organism } from "./creatures";
 import { sfx, unlockAudio } from "./audio";
 import { Debug, type Unit } from "./debug";
 import { Fx } from "./fx";
@@ -10,7 +12,6 @@ import { Net } from "./net";
 import * as physics from "./physics";
 import { KINDS, MODES, PLAYER_COLOR, SWARMS, SWARM_COLORS, TICK_MS } from "./protocol";
 import type { EnemyRow, GameEvent, Kind, Phase, PlayerRow, Snapshot, Swarm, Welcome } from "./protocol";
-import { Robot } from "./robots";
 import { Rifle } from "./weapon";
 
 await RAPIER.init();
@@ -51,17 +52,17 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 $("app").appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05040d);
-scene.fog = new THREE.FogExp2(0x0b0822, 0.017);
-scene.environment = neonEnvironment(renderer);
-scene.environmentIntensity = 0.8;
+scene.background = new THREE.Color(PALETTE.shadow);
+scene.fog = new THREE.FogExp2(PALETTE.fog, 0.021);
+scene.environment = bioEnvironment(renderer);
+scene.environmentIntensity = 0.55;
 const camera = new THREE.PerspectiveCamera(78, innerWidth / innerHeight, 0.05, 400);
 camera.rotation.order = "YXZ";
 scene.add(camera);
 // The viewmodel scene: the rifle follows the camera through `rig`.
 const vmScene = new THREE.Scene();
 const rig = new THREE.Group();
-vmScene.add(rig, new THREE.HemisphereLight(0x8a7cff, 0x120e2a, 1.2));
+vmScene.add(rig, new THREE.HemisphereLight(0x5a5fa0, PALETTE.shadow, 0.9));
 vmScene.environment = scene.environment;
 const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
 composer.addPass(new RenderPass(scene, camera));
@@ -71,9 +72,11 @@ vmPass.ignoreBackground = true;
 composer.addPass(vmPass);
 composer.addPass(new EffectPass(
   camera,
-  new BloomEffect({ mipmapBlur: true, intensity: 1.15, luminanceThreshold: 0.62, luminanceSmoothing: 0.2, radius: 0.7 }),
+  new BloomEffect({ mipmapBlur: true, intensity: 0.95, luminanceThreshold: 0.7, luminanceSmoothing: 0.25, radius: 0.78 }),
   new SMAAEffect(),
-  new VignetteEffect({ darkness: 0.55, offset: 0.3 }),
+  new HueSaturationEffect({ saturation: 0.08 }),
+  new BrightnessContrastEffect({ contrast: 0.07 }),
+  new VignetteEffect({ darkness: 0.62, offset: 0.28 }),
   new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }),
 ));
 addEventListener("resize", () => {
@@ -109,10 +112,10 @@ let welcomed = false;
 const snaps: { tick: number; rows: Map<string, number[]> }[] = [];
 const keys = new Set<string>();
 
-interface EnemyView { robot: Robot; kind: Kind; swarm: Swarm; pos: THREE.Vector3; last: THREE.Vector3; speed: number; mode: string; hp: number }
+interface EnemyView { org: Organism; kind: Kind; swarm: Swarm; pos: THREE.Vector3; last: THREE.Vector3; speed: number; mode: string; hp: number; spawning: boolean; emerge: number }
 const enemies = new Map<number, EnemyView>();
-// Other players: a cyan Striker frame with a name tag. `robot` is null while they're down.
-interface Ally { robot: Robot | null; pos: THREE.Vector3; last: THREE.Vector3; speed: number; hp: number; paused: boolean; tag: HTMLDivElement }
+// Other players: an explorer with a name tag. `org` is null while they're down.
+interface Ally { org: Organism | null; pos: THREE.Vector3; last: THREE.Vector3; speed: number; hp: number; paused: boolean; tag: HTMLDivElement }
 const others = new Map<string, Ally>();
 
 const nowTick = () => performance.now() / TICK_MS + (tickOffset ?? 0);
@@ -210,11 +213,13 @@ function onSnapshot(s: Snapshot) {
 
 function addEnemy(e: EnemyRow) {
   const kind = KINDS[e[1]], swarm = SWARMS[e[8]];
-  const robot = new Robot(kind, SWARM_COLORS[swarm]);
+  const org = createCreature(kind, SWARM_COLORS[swarm]);
+  org.marking = MARKING[swarmTactic[swarm]] ?? 1;
   const pos = new THREE.Vector3(e[2], e[3], e[4]);
-  robot.root.position.copy(pos);
-  scene.add(robot.root);
-  enemies.set(e[0], { robot, kind, swarm, pos, last: pos.clone(), speed: 0, mode: MODES[e[7]], hp: e[6] });
+  org.root.position.copy(pos);
+  scene.add(org.root);
+  const spawning = e[9] === 1;
+  enemies.set(e[0], { org, kind, swarm, pos, last: pos.clone(), speed: 0, mode: MODES[e[7]], hp: e[6], spawning, emerge: spawning ? 0 : 1 });
 }
 
 function removeEnemy(id: number, shatter = false) {
@@ -223,11 +228,11 @@ function removeEnemy(id: number, shatter = false) {
   enemies.delete(id);
   debug.forget(id);
   if (shatter) {
-    fx.shatter(v.robot, SWARM_COLORS[v.swarm]);
+    fx.dissolve(v.org, SWARM_COLORS[v.swarm]); // fx removes it once it has sunk
   } else {
-    v.robot.dispose();
+    v.org.dispose();
+    scene.remove(v.org.root);
   }
-  scene.remove(v.robot.root);
 }
 
 function syncOthers(rows: PlayerRow[]) {
@@ -237,15 +242,15 @@ function syncOthers(rows: PlayerRow[]) {
     if (!a) {
       const tag = document.createElement("div");
       $("allies").appendChild(tag);
-      a = { robot: null, pos: new THREE.Vector3(r[1], r[2], r[3]), last: new THREE.Vector3(r[1], r[2], r[3]), speed: 0, hp: r[5], paused: false, tag };
+      a = { org: null, pos: new THREE.Vector3(r[1], r[2], r[3]), last: new THREE.Vector3(r[1], r[2], r[3]), speed: 0, hp: r[5], paused: false, tag };
       others.set(r[0], a);
     }
     a.hp = r[5];
     a.paused = r[6] === 1;
-    if (a.hp > 0 && !a.robot) {
-      a.robot = new Robot("striker", PLAYER_COLOR);
-      a.robot.root.position.copy(a.pos);
-      scene.add(a.robot.root);
+    if (a.hp > 0 && !a.org) {
+      a.org = new Explorer();
+      a.org.root.position.copy(a.pos);
+      scene.add(a.org.root);
     }
   }
   for (const p of others.keys()) if (!ids.has(p)) removeAlly(p);
@@ -254,14 +259,16 @@ function syncOthers(rows: PlayerRow[]) {
 
 function removeAlly(p: string, shatter = false) {
   const a = others.get(p);
-  if (!a?.robot) {
+  if (!a?.org) {
     if (a && !shatter) { a.tag.remove(); others.delete(p); }
     return;
   }
-  if (shatter) fx.shatter(a.robot, PLAYER_COLOR);
-  else a.robot.dispose();
-  scene.remove(a.robot.root);
-  a.robot = null;
+  if (shatter) fx.dissolve(a.org, PLAYER_COLOR);
+  else {
+    a.org.dispose();
+    scene.remove(a.org.root);
+  }
+  a.org = null;
   if (!shatter) { a.tag.remove(); others.delete(p); }
 }
 
@@ -269,15 +276,15 @@ const tmp = new THREE.Vector3();
 function onEvent(ev: GameEvent, tick: number) {
   switch (ev.k) {
     case "spawn":
-      fx.warp(tmp.set(ev.p[0], 0, ev.p[2]), SWARM_COLORS[ev.sw]);
+      fx.emerge(tmp.set(ev.p[0], 0, ev.p[2]), SWARM_COLORS[ev.sw]);
       if (tmp.distanceTo(camPos()) < 30) sfx.warp();
       break;
     case "proj": {
       const v = enemies.get(ev.src);
       const heavy = ev.kind === "sentinel";
       if (v) {
-        v.robot.fire();
-        fx.flash(v.robot.muzzle(0, tmp), SWARM_COLORS[ev.sw], heavy ? 25 : 12, 0.08);
+        v.org.fire();
+        fx.flash(v.org.muzzle(0, tmp), SWARM_COLORS[ev.sw], heavy ? 25 : 12, 0.08);
       }
       fx.addBolt(ev.id, ev.o, ev.v, SWARM_COLORS[ev.sw], heavy, tick);
       const d = tmp.set(ev.o[0], ev.o[1], ev.o[2]).distanceTo(camPos());
@@ -285,14 +292,14 @@ function onEvent(ev: GameEvent, tick: number) {
       break;
     }
     case "pend":
-      fx.endBolt(ev.id, ev.p, 0xff6ae6, ev.hit !== null);
+      fx.endBolt(ev.id, ev.p, ev.hit !== null);
       break;
     case "shot": {
       if (ev.pid === pid) break;
-      const robot = others.get(ev.pid)?.robot;
-      robot?.fire();
-      const from = robot ? robot.muzzle(0, tmp) : tmp.set(ev.o[0], ev.o[1] - 0.2, ev.o[2]);
-      fx.tracer(from, new THREE.Vector3(...ev.e), PLAYER_COLOR);
+      const org = others.get(ev.pid)?.org;
+      org?.fire();
+      const from = org ? org.muzzle(0, tmp) : tmp.set(ev.o[0], ev.o[1] - 0.2, ev.o[2]);
+      fx.shot(from, new THREE.Vector3(...ev.e), PLAYER_COLOR);
       break;
     }
     case "down":
@@ -309,8 +316,11 @@ function onEvent(ev: GameEvent, tick: number) {
       else feed(`${callsign(ev.pid)} is back`, "ally");
       break;
     case "hit": {
-      enemies.get(ev.id)?.robot.hit();
-      fx.burst(tmp.set(ev.p[0], ev.p[1], ev.p[2]), ev.crit ? 0xffffff : PLAYER_COLOR, ev.crit ? 18 : 10, 5, 0.4, 1);
+      const target = enemies.get(ev.id);
+      target?.org.hit();
+      const blood = target ? SWARM_COLORS[target.swarm] : PLAYER_COLOR;
+      fx.burst(tmp.set(ev.p[0], ev.p[1], ev.p[2]), blood, ev.crit ? 20 : 10, ev.crit ? 5 : 4, 0.5, 1);
+      fx.spores(tmp, blood, ev.crit ? 8 : 4, { spread: 0.6, rise: 0.3, size: 0.35, life: 0.7 });
       if (ev.pid === pid) {
         const hm = $("hitmarker");
         hm.classList.toggle("crit", ev.crit);
@@ -362,9 +372,37 @@ function onEvent(ev: GameEvent, tick: number) {
       break;
     case "decision":
       debug.onDecision(ev);
+      if (ev.status === "applied" && ev.tactic && ev.tactic !== swarmTactic[ev.sw]) signalSwarm(ev.sw, ev.tactic);
       if (ev.status === "applied" && ev.tactic) setTactic(ev.sw, ev.tactic, ev.note ?? "", ev.source === "llm" ? ev.callout ?? "" : "");
       break;
   }
+}
+
+// Swarm visual language. When a swarm's agent changes tactics, its creatures
+// signal in a pattern that matches the new tactic, and their markings settle at
+// a new intensity: dark for an ambush, blazing for a rush.
+const MARKING: Record<string, number> = { ambush: 0.25, rush: 1.7, kite: 0.85, retreat: 0.6, regroup: 0.8 };
+const swarmTactic: Record<Swarm, string> = { alpha: "none", bravo: "none" };
+const signals = new Map<number, number>(); // time (ms) -> enemy id
+
+function signalSwarm(sw: Swarm, tactic: string) {
+  swarmTactic[sw] = tactic;
+  const units = [...enemies.entries()].filter(([, v]) => v.swarm === sw);
+  for (const [, v] of units) v.org.marking = MARKING[tactic] ?? 1;
+  if (tactic === "ambush" || !units.length) return; // they go quiet
+  const cx = units.reduce((s, [, v]) => s + v.pos.x, 0) / units.length;
+  const cz = units.reduce((s, [, v]) => s + v.pos.z, 0) / units.length;
+  const sequential = ["flank", "bait", "crossfire", "harass"].includes(tactic);
+  const ripple = tactic === "retreat" || tactic === "regroup";
+  const order = units.sort(([, a], [, b]) => sequential
+    ? Math.atan2(a.pos.z - cz, a.pos.x - cx) - Math.atan2(b.pos.z - cz, b.pos.x - cx)
+    : Math.hypot(a.pos.x - me.x, a.pos.z - me.z) - Math.hypot(b.pos.x - me.x, b.pos.z - me.z));
+  const now = performance.now();
+  order.forEach(([id], i) => {
+    let at = now + (sequential ? i * 130 : ripple ? i * 80 : 0);
+    while (signals.has(at)) at += 0.01;
+    signals.set(at, id);
+  });
 }
 
 // HUD
@@ -507,14 +545,20 @@ function shoot() {
     }
   }
   const end = origin.clone().addScaledVector(dir, t);
-  fx.tracer(rifle.muzzle(new THREE.Vector3()), end, PLAYER_COLOR);
-  if (!enemyHit && t < 150) fx.burst(end, PLAYER_COLOR, 6, 3, 0.3, 1);
+  const muzzle = rifle.muzzle(new THREE.Vector3());
+  fx.shot(muzzle, end, PLAYER_COLOR);
+  fx.spores(muzzle, PALETTE.turquoise, 3, { spread: 0.15, rise: 0.1, size: 0.08, life: 0.4, k: 1.2 });
+  shake = Math.min(1, shake + 0.05);
+  if (!enemyHit && t < 150) {
+    fx.burst(end, PLAYER_COLOR, 7, 2.5, 0.35, 1);
+    fx.spores(end, PLAYER_COLOR, 3, { spread: 0.4, rise: 0.2, size: 0.3, life: 0.6 });
+  }
 }
 
 const tagPos = new THREE.Vector3();
 function allyTag(p: string, a: Ally) {
   tagPos.copy(a.pos).setY(a.pos.y + 2.35).project(camera);
-  const visible = !!a.robot && tagPos.z < 1 && Math.abs(tagPos.x) < 1.1 && Math.abs(tagPos.y) < 1.1;
+  const visible = !!a.org && tagPos.z < 1 && Math.abs(tagPos.x) < 1.1 && Math.abs(tagPos.y) < 1.1;
   a.tag.style.display = visible ? "" : "none";
   if (!visible) return;
   a.tag.style.left = `${(tagPos.x * 0.5 + 0.5) * innerWidth}px`;
@@ -546,13 +590,12 @@ function interpolate() {
     if (!s) continue;
     const { ra, rb } = s;
     v.pos.set(ra[2] + (rb[2] - ra[2]) * k, ra[3] + (rb[3] - ra[3]) * k, ra[4] + (rb[4] - ra[4]) * k);
-    v.robot.root.position.copy(v.pos);
+    v.org.root.position.copy(v.pos);
     let dy = rb[5] - ra[5];
     dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-    v.robot.root.rotation.y = ra[5] + dy * k;
+    v.org.root.rotation.y = ra[5] + dy * k;
     v.mode = MODES[rb[7]];
-    const spawning = rb[9] === 1;
-    v.robot.root.scale.set(1, spawning ? 0.2 + 0.8 * Math.min(1, (performance.now() % 600) / 600) : 1, 1);
+    v.spawning = rb[9] === 1;
   }
   for (const [p, a] of others) {
     const s = sample(`p${p}`);
@@ -561,8 +604,8 @@ function interpolate() {
     a.pos.set(ra[0] + (rb[0] - ra[0]) * k, ra[1] + (rb[1] - ra[1]) * k, ra[2] + (rb[2] - ra[2]) * k);
     let dy = rb[3] - ra[3];
     dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-    a.robot?.root.position.copy(a.pos);
-    a.robot?.root.rotation.set(0, ra[3] + dy * k, 0);
+    a.org?.root.position.copy(a.pos);
+    a.org?.root.rotation.set(0, ra[3] + dy * k, 0);
   }
 }
 
@@ -615,13 +658,24 @@ function frame(now: number) {
   for (const [id, v] of enemies) {
     v.speed = v.speed * 0.8 + (v.pos.distanceTo(v.last) / Math.max(dt, 1e-3)) * 0.2;
     v.last.copy(v.pos);
-    v.robot.update(dt, v.speed);
+    // A new creature rises out of the soil while the server says it's spawning.
+    v.emerge = Math.min(1, v.emerge + dt / (v.spawning ? 0.6 : 0.2));
+    v.org.root.position.y = v.pos.y - (1 - v.emerge) ** 2 * 1.8;
+    v.org.update(dt, v.speed, v.mode);
     units.push({ id, swarm: v.swarm, pos: v.pos, height: HEIGHT[v.kind], mode: v.mode });
+  }
+  for (const [at, id] of signals) {
+    if (at > performance.now()) continue;
+    signals.delete(at);
+    const v = enemies.get(id);
+    if (!v) continue;
+    v.org.signal();
+    fx.signal(tmp.copy(v.pos).setY(v.pos.y + HEIGHT[v.kind] * 0.8), SWARM_COLORS[v.swarm]);
   }
   for (const [p, a] of others) {
     a.speed = a.speed * 0.8 + (a.pos.distanceTo(a.last) / Math.max(dt, 1e-3)) * 0.2;
     a.last.copy(a.pos);
-    a.robot?.update(dt, a.speed);
+    a.org?.update(dt, a.speed);
     allyTag(p, a);
   }
   arena?.update(elapsed);

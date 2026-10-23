@@ -106,5 +106,6 @@ export type ClientMessage =
   | { t: "restart" }
   | { t: "ping"; c: number };
 
-export const SWARM_COLORS: Record<Swarm, number> = { alpha: 0xff2bd1, bravo: 0x6d7bff };
-export const PLAYER_COLOR = 0x29f0ff;
+// Each swarm's bioluminescent signature; the player's light is the forest's cyan.
+export const SWARM_COLORS: Record<Swarm, number> = { alpha: 0xff7957, bravo: 0xa66bff };
+export const PLAYER_COLOR = 0x42e8d1;

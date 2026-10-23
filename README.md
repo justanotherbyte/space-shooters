@@ -1,6 +1,6 @@
 # Crosswind Swarm
 
-A browser FPS in a neon arena. The enemies are run by Python agents on Cloudflare Workers. Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects built with the [Crosswind Python Agents SDK](https://crosswind.viswa.space) (`cf-agents`). The `ArenaAgent` runs the authoritative game at 20 Hz. Each `SwarmAgent` commands half the robots. The browser sends inputs and draws what the server says happened.
+A browser FPS set in a bioluminescent alien forest. The creatures hunting you are run by Python agents on Cloudflare Workers. Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects built with the [Crosswind Python Agents SDK](https://crosswind.viswa.space) (`cf-agents`). The `ArenaAgent` runs the authoritative game at 20 Hz. Each `SwarmAgent` commands half the creatures. The browser sends inputs and draws what the server says happened.
 
 ## Run it locally
 
@@ -23,7 +23,7 @@ The URL carries the room (`?room=r-abc123`). Reloading rejoins the same `ArenaAg
 
 Anyone who opens the same room URL joins your squad. **Copy invite link** on the start screen copies it. The first five players get their own spawn slot on the central platform. Each player after the first adds two Strikers to every wave, and every two extra players add a Sentinel.
 
-- Score, waves and kills are shared. Allies show as cyan robots with a callsign and their health.
+- Score, waves and kills are shared. Allies show as explorers in cyan-lit suits, with a callsign and their health.
 - A player who goes down stays down until the squad clears the wave, then comes back with 50 integrity. The match ends when every connected player is down.
 - The world pauses only when every player has paused. A paused player can't be targeted or hit, so pausing in co-op takes you out of the fight without stopping it.
 - Each tab is one player. A duplicated tab copies the original's player id, so when it joins, the server hands that player to the new tab and the original takes a fresh id.
@@ -145,6 +145,39 @@ The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudfla
 
 When a Durable Object is evicted, the arena restores the checkpoint on its next start. The match id, score and tick carry over, and the interrupted wave restarts when the player rejoins. Enemies and projectiles aren't checkpointed. Saving them would mean a SQLite write per tick.
 
+## Art direction
+
+The arena is a clearing in a bioluminescent forest. The server's level is unchanged: its boxes and ramps stay the collision truth, and the client draws organic stand-ins over them.
+
+| Collision | Drawn as |
+|---|---|
+| Perimeter walls | Layered cliffs (part of one terrain heightfield), weathered rock formations, hanging vines |
+| Platforms | Rock mesas with flat walkable tops, roots spilling over the rims, shelf fungi |
+| Pillars | Giant mushrooms with glowing gills under their caps and hanging tendrils, each lit from below |
+| Low cover | Fallen logs sunk into the soil |
+| Crates | Boulders crusted with crystals |
+| Ramps | Earth slopes that follow the walkable plane exactly, with roots down their sides |
+
+Everything alive uses one material (`bioMaterial` in `web/src/bio.ts`), a `MeshStandardMaterial` with a patched shader:
+
+- **Painted geometry:** each painted geometry carries per-vertex emission, sway and pulse phase.
+- **Shared clock:** grass, ferns and tendrils sway and glow pulses breathe off one `uTime` uniform, with no per-plant update loop.
+- **Veins drawn per pixel:** glowing veins and cracks are drawn per pixel, as the anti-aliased zero-crossings of warped sine waves in object space. They stay crisp on coarse meshes, where per-vertex patterns smear into blobs.
+- **Instancing:** vegetation is six instanced meshes.
+
+The whole scene is about 90 draw calls and 620k triangles a frame.
+
+The palette keeps surfaces dark and matte (`#10142B`, `#173C45`). Saturated color is reserved for living light: cyan and turquoise for the forest and the player, orchid violet for some fungi and for swarm bravo, coral for swarm alpha and every hostile eye.
+
+Swarm coordination shows on the creatures, driven by the server's `decision` events. When a swarm's agent changes tactic, its creatures pulse and release signalling spores in a pattern that matches the new tactic:
+
+- **Maneuvers** (flank, bait, crossfire, hit and run) pulse one creature at a time.
+- **Pressure tactics** pulse all at once.
+- **A retreat** ripples outward from the player.
+- **An ambush** goes dark, its markings dimmed to a quarter.
+
+Sentinel spore sacs swell between volleys and flare when they fire, timed from each Sentinel's own last shot.
+
 ## Protocol (v1)
 
 All messages are JSON over one WebSocket at `/agents/arena-agent/{room}`. The client uses `AgentClient` from the Agents SDK (`agents/client`). It reconnects on its own and sends `join` on every open.
@@ -173,7 +206,7 @@ The `ev` events are `spawn`, `death`, `proj` (a bolt was fired), `pend` (a bolt 
 
 The client predicts its own movement with `web/src/physics.ts`, a line-for-line port of `src/physics.py` (`tests/test_mirror.py` checks they agree). On each snapshot it resets to the server's state and replays the input frames the server hasn't applied. Any visual error decays over about 100 ms. Enemies and other players are drawn 100 ms in the past, interpolated between snapshots. Enemy bolts start at the muzzle and catch up to the server's present.
 
-Rapier handles the client's collision queries against the level, such as where a tracer ends, and the debris when a robot breaks apart. Player movement uses the mirrored Python code instead of Rapier's character controller: the server can't run Rapier, and two different collision models would disagree on every wall and force constant corrections.
+Rapier handles the client's collision queries against the level, such as where a shot lands, and the fragments thrown off when a creature dies. Player movement uses the mirrored Python code instead of Rapier's character controller: the server can't run Rapier, and two different collision models would disagree on every wall and force constant corrections.
 
 ## Tests
 
@@ -198,10 +231,11 @@ src/physics.py         Movement, collision and ray casts
 src/level.py           Arena geometry, sent to clients in welcome
 web/src/main.ts        Game loop: prediction, reconciliation, interpolation, events
 web/src/net.ts         AgentClient connection
-web/src/arena.ts       Arena meshes, lights and Rapier colliders
-web/src/robots.ts      Procedural Striker and Sentinel models
-web/src/weapon.ts      First-person energy rifle
-web/src/fx.ts          Sparks, bolts, tracers, warp-ins, Rapier debris
+web/src/bio.ts         Palette, noise, the shared animated material, organic geometry builders
+web/src/arena.ts       The forest over the level's collision boxes, vegetation, lights, Rapier colliders
+web/src/creatures.ts   Procedural Striker, Sentinel and explorer bodies, and their animation
+web/src/weapon.ts      First-person organic energy rifle
+web/src/fx.ts          Fluid splashes, spore clouds, spore bolts, shots, emergence, death
 web/src/debug.ts       F3 telemetry (connects to the SwarmAgents) and F4 overlay
 web/src/audio.ts       Synthesized sound
 ```
