@@ -18,6 +18,8 @@ Build the page first, then start the worker:
 npm install
 npm run build    # builds the page into dist/, which the worker serves
 uvx wynd dev     # the game on http://localhost:8787
+
+uvx wynd deploy # deploy to cloudflare
 ```
 
 Open http://localhost:8787 and click **Deploy**. Edits to `src/*.py` reload the worker. After editing `web/`, run `npm run build` again.
