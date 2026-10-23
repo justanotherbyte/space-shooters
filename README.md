@@ -12,16 +12,17 @@ Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects. The `
 
 You need [uv](https://docs.astral.sh/uv/) and Node.js 22 or newer.
 
+Build the page first, then start the worker:
+
 ```sh
 npm install
-uv sync
-npm run worker   # the Python agents on http://localhost:8787
-npm run dev      # in a second terminal: Vite on http://localhost:5173
+npm run build    # builds the page into dist/, which the worker serves
+uvx wynd dev     # the game on http://localhost:8787
 ```
 
-Open http://localhost:5173 and click **Deploy**. Vite proxies `/agents/*`, WebSockets included, to the worker. Edits to `src/*.py` reload the worker. Edits to `web/` hot-reload the page.
+Open http://localhost:8787 and click **Deploy**. Edits to `src/*.py` reload the worker. After editing `web/`, run `npm run build` again.
 
-To serve the built page from the worker itself, as in production, run `npm run build` and open http://localhost:8787.
+For hot reload of `web/`, also run `npm run dev` in a second terminal and open http://localhost:5173 instead. Vite proxies `/agents/*`, WebSockets included, to the worker.
 
 The URL carries the room (`?room=r-abc123`). Reloading rejoins the same `ArenaAgent`.
 
@@ -40,19 +41,20 @@ Controls: WASD to move, the mouse to aim, left click to fire, hold right click t
 
 You need [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and a Cloudflare account.
 
+Build the page first, then deploy:
+
 ```sh
 git clone https://github.com/justanotherbyte/space-shooters.git
 cd space-shooters
-uv sync
 npm install
 npm run build          # builds the page into dist/, which the deploy uploads
 npx wrangler login     # once
-uv run wynd deploy
+uvx wynd deploy
 ```
 
-After the first deploy, `npm run deploy` runs the build and the deploy in one step.
+After changing `web/`, run `npm run build` again before you deploy.
 
-`wynd deploy` stages `cloudflare.config.py` as a Wrangler config, vendors the Python packages, and uploads the Worker, the static assets in `dist/` and both Durable Object classes. The first deploy creates the `ArenaAgent` and `SwarmAgent` SQLite-backed namespaces. `uv run wynd deploy --dry-run` shows the upload without deploying. The current upload is 7.8 MB, or 2.1 MB gzipped.
+`wynd deploy` stages `cloudflare.config.py` as a Wrangler config, vendors the Python packages, and uploads the Worker, the static assets in `dist/` and both Durable Object classes. The first deploy creates the `ArenaAgent` and `SwarmAgent` SQLite-backed namespaces. `uvx wynd deploy --dry-run` shows the upload without deploying. The current upload is 7.8 MB, or 2.1 MB gzipped.
 
 `run_worker_first: ["/agents/*"]` in `cloudflare.config.py` sends only agent traffic to Python. Everything else is a static asset.
 
@@ -156,7 +158,7 @@ The rules stay in charge of safety:
 
 A missing, late, failed or invalid reply only means the rules choose, as they did before the strategist existed. Each decision event says whether the directive or the rules picked the tactic (`source`). The HUD shows the model's callout with an `LLM` badge when its directive is in force. F3 shows the model, call count, failures, latency, what triggered the last call, the last error, and the directive with its reason.
 
-The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudflare.config.py`. Set it to `""` to turn the strategist off. In local dev, restart `npm run worker` after changing it. Workers AI runs on Cloudflare even in local dev, so `npm run worker` needs `npx wrangler login`, and calls count against your Workers AI usage. The strategist turns the model's thinking mode off, because with it on the model spent its whole token budget reasoning and never answered. A reply takes about 2 s. Each call is about 400 input and 100 output tokens, and each of the two swarms calls every 3.5 s, or sooner on events. In a 45 s test wave that came to one call every 2.5–3 s per swarm.
+The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudflare.config.py`. Set it to `""` to turn the strategist off. In local dev, restart `uvx wynd dev` after changing it. Workers AI runs on Cloudflare even in local dev, so `uvx wynd dev` needs `npx wrangler login`, and calls count against your Workers AI usage. The strategist turns the model's thinking mode off, because with it on the model spent its whole token budget reasoning and never answered. A reply takes about 2 s. Each call is about 400 input and 100 output tokens, and each of the two swarms calls every 3.5 s, or sooner on events. In a 45 s test wave that came to one call every 2.5–3 s per swarm.
 
 `@cf/zai-org/glm-5.3-flash` is stronger but not available on the Workers Free plan. Any Workers AI model that supports `response_format: json_schema` works.
 
