@@ -70,12 +70,15 @@ def ramp_blocks(x: float, z: float, feet: float) -> bool:
 def push_out(body: Body) -> None:
     """Push the body's circle out of every box it can't step onto."""
     r = body.radius
+    feet, head = body.y + STEP, body.y + body.height
     for b in BOXES:
-        if b[4] <= body.y + STEP or b[1] >= body.y + body.height:
+        if b[4] <= feet or b[1] >= head:
             continue
-        cx = min(max(body.x, b[0]), b[3])
-        cz = min(max(body.z, b[2]), b[5])
-        dx, dz = body.x - cx, body.z - cz
+        x, z = body.x, body.z
+        # Same result as physics.ts's Math.min(Math.max(...)), without two builtin calls per axis: the server's hottest line.
+        cx = b[0] if x < b[0] else b[3] if x > b[3] else x
+        cz = b[2] if z < b[2] else b[5] if z > b[5] else z
+        dx, dz = x - cx, z - cz
         d2 = dx * dx + dz * dz
         if d2 >= r * r:
             continue
@@ -199,7 +202,7 @@ def inside_solid(points: np.ndarray) -> np.ndarray:
     """For each point (an (n, 3) array), whether it is inside the floor, a box or a ramp."""
     p = np.atleast_2d(points)
     solid = p[:, 1] <= 0
-    solid |= ((p[:, None, :] >= BOX_LO) & (p[:, None, :] <= BOX_HI)).all(axis=2).any(axis=1)
+    solid |= np.all((p[:, None, :] >= BOX_LO) & (p[:, None, :] <= BOX_HI), axis=2).any(axis=1)
     x, y, z = p[:, 0:1], p[:, 1:2], p[:, 2:3]
     rx0, rz0, rx1, rz1, along_x, h0, h1 = _RAMPS.T
     over = (x >= rx0) & (x <= rx1) & (z >= rz0) & (z <= rz1)

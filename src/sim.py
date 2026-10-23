@@ -10,6 +10,7 @@ everything that happened lands in `World.events` for the arena to broadcast.
 import math
 import random
 from collections import deque
+from typing import NamedTuple
 
 import numpy as np
 
@@ -47,20 +48,35 @@ KNIFE_RANGE = 2.6  # from the eye
 KNIFE_DAMAGE = 45
 KNIFE_TICKS = 9  # 0.45 s between stabs
 
-# hit: (height of sphere center, radius, damage multiplier)
+class Archetype(NamedTuple):
+    hp: int
+    speed: float
+    radius: float
+    height: float
+    range: float
+    cooldown: float
+    dmg: int
+    bolt: float
+    spread: float
+    burst: int
+    score: int
+    prefer: float
+    hit: tuple[tuple[float, float, float], ...]  # (height of sphere center, radius, damage multiplier)
+
+
 ARCHETYPES = {
-    "striker": {
-        "hp": 60, "speed": 6.2, "radius": 0.5, "height": 1.9, "range": 28.0,
-        "cooldown": 1.7, "dmg": 4, "bolt": 28.0, "spread": 0.085, "burst": 1,
-        "score": 100, "prefer": 11.0,
-        "hit": ((0.95, 0.55, 1.0), (1.65, 0.32, 1.6)),
-    },
-    "sentinel": {
-        "hp": 280, "speed": 3.0, "radius": 0.95, "height": 3.0, "range": 40.0,
-        "cooldown": 3.2, "dmg": 8, "bolt": 20.0, "spread": 0.11, "burst": 3,
-        "score": 350, "prefer": 20.0,
-        "hit": ((1.35, 1.05, 1.0), (2.6, 0.6, 1.5)),
-    },
+    "striker": Archetype(
+        hp=60, speed=6.2, radius=0.5, height=1.9, range=28.0,
+        cooldown=1.7, dmg=4, bolt=28.0, spread=0.085, burst=1,
+        score=100, prefer=11.0,
+        hit=((0.95, 0.55, 1.0), (1.65, 0.32, 1.6)),
+    ),
+    "sentinel": Archetype(
+        hp=280, speed=3.0, radius=0.95, height=3.0, range=40.0,
+        cooldown=3.2, dmg=8, bolt=20.0, spread=0.11, burst=3,
+        score=350, prefer=20.0,
+        hit=((1.35, 1.05, 1.0), (2.6, 0.6, 1.5)),
+    ),
 }
 # Swarm gear, thrown only when the LLM strategist calls for it. Each swarm's
 # stock refills every wave. Times are in ticks.
@@ -80,6 +96,7 @@ SWARMS = ("alpha", "bravo")
 # Append only: clients decode the mode by its index.
 MODES = ("fallback", "assault", "suppress", "flank", "retreat", "regroup", "hold", "rush")
 FIRING_MODES = {"fallback", "assault", "suppress", "hold", "rush"}
+MODE_SPEED = {"retreat": 1.2, "flank": 1.2, "rush": 1.3}  # multiplies the archetype's speed
 
 
 def r2(v: float) -> float:
@@ -130,8 +147,8 @@ class Enemy:
         self.kind = kind
         self.swarm = swarm
         self.a = a
-        self.body = Body(x, 0.0, z, a["radius"], a["height"])
-        self.hp = a["hp"]
+        self.body = Body(x, 0.0, z, a.radius, a.height)
+        self.hp = a.hp
         self.yaw = 0.0
         self.cooldown = 1.0 + (eid % 5) * 0.3
         self.order: dict | None = None
@@ -259,7 +276,7 @@ class World:
             (e, m, (x, y + h, z), r)
             for e in self.enemies.values() if not e.spawning
             for x, y, z in [rewind.get(e.id, (e.body.x, e.body.y, e.body.z))]
-            for h, r, m in e.a["hit"]
+            for h, r, m in e.a.hit
         ]
         if spheres:
             t = ray_spheres(np.array([ox, oy, oz]), np.array([dx, dy, dz]), np.array([c for *_, c, _ in spheres]), np.array([r for *_, r in spheres]))
@@ -289,7 +306,7 @@ class World:
     def _kill(self, e: Enemy, pid: str | None) -> None:
         self.enemies.pop(e.id, None)
         self.kills += 1
-        self.score += e.a["score"]
+        self.score += e.a.score
         self.best = max(self.best, self.score)
         self.swarm_stats[e.swarm]["losses"] += 1
         b = e.body
@@ -303,7 +320,7 @@ class World:
         """What a swarm's controller sees: its units, the players, its outcomes."""
         units = [
             {
-                "id": e.id, "kind": e.kind, "hp": e.hp, "maxHp": e.a["hp"],
+                "id": e.id, "kind": e.kind, "hp": e.hp, "maxHp": e.a.hp,
                 "pos": [r2(e.body.x), r2(e.body.y), r2(e.body.z)],
                 "mode": e.mode, "role": e.role, "spawning": e.spawning > 0,
             }
@@ -558,12 +575,12 @@ class World:
             e.role = "solo"
             dx, dz = b.x - tx, b.z - tz
             d = math.sqrt(dx * dx + dz * dz) or 1.0
-            gx, gz = tx + dx / d * e.a["prefer"], tz + dz / d * e.a["prefer"]
+            gx, gz = tx + dx / d * e.a.prefer, tz + dz / d * e.a.prefer
             fire_ok = True
 
         dx, dz = gx - b.x, gz - b.z
         dist = math.sqrt(dx * dx + dz * dz)
-        speed = e.a["speed"] * {"retreat": 1.2, "flank": 1.2, "rush": 1.3}.get(e.mode, 1.0)
+        speed = e.a.speed * MODE_SPEED.get(e.mode, 1.0)
         wx = wz = 0.0
         if dist > 1.2:
             wx, wz = dx / dist * speed, dz / dist * speed
@@ -614,39 +631,39 @@ class World:
             return
         tb = target.body
         d = math.sqrt(_dist2(b.x, b.z, tb.x, tb.z))
-        if d > e.a["range"]:
+        if d > e.a.range:
             return
         mx, my, mz = b.x, b.y + b.height * 0.72, b.z
         if not line_of_sight(mx, my, mz, tb.x, tb.y + 1.1, tb.z) or self.smoked((mx, my, mz), (tb.x, tb.y + 1.1, tb.z)):
             e.cooldown = 0.25
             return
         suppress = e.mode == "suppress"
-        e.cooldown = e.a["cooldown"] * (0.6 if suppress else 1.0) * (0.85 + 0.3 * self.rng.random())
+        e.cooldown = e.a.cooldown * (0.6 if suppress else 1.0) * (0.85 + 0.3 * self.rng.random())
         self._fire_bolts(e, target, mx, my, mz, suppress)
 
     def _fire_bolts(self, e: Enemy, target: Player, mx, my, mz, suppress: bool) -> None:
         tb = target.body
         a = e.a
-        lead = math.sqrt(_dist2(mx, mz, tb.x, tb.z)) / a["bolt"] * 0.6
+        lead = math.sqrt(_dist2(mx, mz, tb.x, tb.z)) / a.bolt * 0.6
         ax, ay, az = tb.x + tb.vx * lead - mx, tb.y + 1.1 - my, tb.z + tb.vz * lead - mz
         n = math.sqrt(ax * ax + ay * ay + az * az) or 1.0
         ax, ay, az = ax / n, ay / n, az / n
-        spread = a["spread"] * (1.6 if suppress else 1.0)
-        for i in range(a["burst"]):
-            fan = (i - (a["burst"] - 1) / 2) * 0.07
+        spread = a.spread * (1.6 if suppress else 1.0)
+        for i in range(a.burst):
+            fan = (i - (a.burst - 1) / 2) * 0.07
             c, s = math.cos(fan), math.sin(fan)
             dx, dz = ax * c - az * s, ax * s + az * c
             dx += self.rng.gauss(0, spread)
             dy = ay + self.rng.gauss(0, spread * 0.5)
             dz += self.rng.gauss(0, spread)
             n = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
-            v = a["bolt"]
+            v = a.bolt
             pid = self.next_id
             self.next_id += 1
             proj = {
                 "x": mx, "y": my, "z": mz,
                 "vx": dx / n * v, "vy": dy / n * v, "vz": dz / n * v,
-                "dmg": a["dmg"], "sw": e.swarm, "src": e.id, "ttl": 3.0,
+                "dmg": a.dmg, "sw": e.swarm, "src": e.id, "ttl": 3.0,
             }
             self.projectiles[pid] = proj
             self.events.append({
@@ -690,8 +707,8 @@ class World:
                 cy = np.clip(pos[:, 1], b.y + 0.2, b.y + 1.6)  # nearest point on the player's body axis
                 near = (pos[:, 0] - b.x) ** 2 + (pos[:, 2] - b.z) ** 2 + (pos[:, 1] - cy) ** 2 < 0.6 * 0.6
                 hit[moving & near & (hit < 0)] = k
-            moving &= (hit < 0) & ~inside_solid(pos)
-        solid = inside_solid(pos)
+            solid = inside_solid(pos)  # the last substep's result is also the final one
+            moving &= (hit < 0) & ~solid
         for i, pid in enumerate(ids):
             pr = prs[i]
             pr["ttl"] -= DT
@@ -744,9 +761,9 @@ class World:
         if not clouds:
             return False
         c = np.array(clouds) + (0.0, SMOKE_HEIGHT, 0.0)
-        a, ab = np.array(a), np.subtract(b, a)
-        t = np.clip((c - a) @ ab / max(float(ab @ ab), 1e-9), 0.0, 1.0)
-        nearest = a + t[:, None] * ab
+        o, ab = np.array(a), np.subtract(b, a)
+        t = np.clip((c - o) @ ab / max(float(ab @ ab), 1e-9), 0.0, 1.0)
+        nearest = o + t[:, None] * ab
         return bool((((c - nearest) ** 2).sum(axis=1) < SMOKE_RADIUS**2).any())
 
     def _damage(self, p: Player, amt: int, sw: str, frm: tuple[float, float]) -> None:

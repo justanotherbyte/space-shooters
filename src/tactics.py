@@ -81,7 +81,7 @@ def decide(memory: dict, obs: dict) -> tuple[dict, dict]:
 
     # Focus fire on the weakest player in reach.
     player = min(players, key=lambda p: (p["hp"], _d(p["pos"][0], p["pos"][2], *_centroid(units))))
-    px, py, pz = player["pos"]
+    px, _, pz = player["pos"]
     m["last_player"] = {"id": player["id"], "pos": player["pos"], "vel": player["vel"], "tick": tick}
     m["track"] = (m["track"] + [[px, pz]])[-8:]
     if len(m["track"]) >= 6:

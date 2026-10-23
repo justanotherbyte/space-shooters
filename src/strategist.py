@@ -80,17 +80,18 @@ the target and only matters for flank. engage_range is in meters, 9 to 22. \
 callout is one short radio line to your ally, in character, under 70 \
 characters. reason is one plain sentence on why."""
 
+PROPERTIES = {
+    "tactic": {"type": "string", "enum": list(TACTICS)},
+    "flank_side": {"type": "string", "enum": list(SIDES)},
+    "engage_range": {"type": "number"},
+    "gear": {"type": "string", "enum": list(GEAR)},
+    "callout": {"type": "string"},
+    "reason": {"type": "string"},
+}
 SCHEMA = {
     "type": "object",
-    "properties": {
-        "tactic": {"type": "string", "enum": list(TACTICS)},
-        "flank_side": {"type": "string", "enum": list(SIDES)},
-        "engage_range": {"type": "number"},
-        "gear": {"type": "string", "enum": list(GEAR)},
-        "callout": {"type": "string"},
-        "reason": {"type": "string"},
-    },
-    "required": ["tactic", "flank_side", "engage_range", "gear", "callout", "reason"],
+    "properties": PROPERTIES,
+    "required": list(PROPERTIES),
     "additionalProperties": False,
 }
 
@@ -199,7 +200,7 @@ def parse_directive(text: str | None, tick: int) -> dict | None:
         d = json.loads(text)
     except ValueError:
         return None
-    if not isinstance(d, dict) or set(d) != set(SCHEMA["properties"]):
+    if not isinstance(d, dict) or d.keys() != PROPERTIES.keys():
         return None
     tactic, side, rng = d["tactic"], d["flank_side"], d["engage_range"]
     if tactic not in TACTICS or side not in SIDES or d["gear"] not in GEAR:
