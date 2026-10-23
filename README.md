@@ -1,3 +1,5 @@
+![Crosswind Swarm](.github/hero.png)
+
 # Crosswind Swarm
 
 A browser FPS in a sunlit mecha-anime testing range. The mech squads hunting you are run by Python agents on Cloudflare Workers. Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects built with the [Crosswind Python Agents SDK](https://crosswind.viswa.space) (`cf-agents`). The `ArenaAgent` runs the authoritative game at 20 Hz. Each `SwarmAgent` commands half the mechs. The browser sends inputs and draws what the server says happened.
