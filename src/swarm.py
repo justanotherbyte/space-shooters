@@ -19,7 +19,8 @@ from agents import Agent
 import strategist
 import tactics
 
-ASK_EVERY = 120  # ticks (6 s) between strategist calls
+ASK_EVERY = 70  # ticks (3.5 s) between scheduled strategist calls
+EVENT_GAP = 20  # ticks (1 s): the least time between calls when events come in quick succession
 
 
 class SwarmAgent(Agent[dict]):
@@ -38,20 +39,29 @@ class SwarmAgent(Agent[dict]):
 
     async def decide(self, observation: str) -> str:
         obs = json.loads(observation)
+        prev = self.state or {}
+        prev_losses = prev.get("stats", {}).get("losses", 0) if prev.get("match") == obs["match"] else 0
         memory = self.state if self.state and self.state.get("swarm") == obs["swarm"] else tactics.new_memory(obs["swarm"])
         # A deep copy: tactics mutates the memory it's given.
         memory, command = tactics.decide(json.loads(json.dumps(memory)), obs)
         memory["last"] = {
             "seq": command["seq"], "tick": command["tick"], "tactic": command["tactic"],
             "formation": command["formation"], "note": command["note"], "units": len(command["orders"]),
-            "source": command["source"],
+            "source": command["source"], "gear": (command.get("gear") or {}).get("kind"),
         }
         model = self.env.STRATEGIST_MODEL
         llm = memory.setdefault("llm", {"model": model, "calls": 0, "failures": 0, "ms": None, "asked": None, "error": None})
+        # Something just happened: ask now rather than on the schedule. Events that
+        # arrive while a call is in flight wait for the next one.
+        event = strategist.detect_event(llm.setdefault("seen", {}), prev_losses, memory, obs)
+        if event:
+            llm["pending"] = (llm.get("pending", []) + [event])[-3:]
         if model and self._due(memory, obs):
             self.asking = True
             llm["asked"] = obs["tick"]
-            task = asyncio.ensure_future(self._ask(model, strategist.messages(memory, obs), obs))
+            pending = llm.pop("pending", [])
+            llm["trigger"] = "; ".join(pending) or "schedule"
+            task = asyncio.ensure_future(self._ask(model, strategist.messages(memory, obs, "; ".join(pending) or None), obs))
             self.calls.add(task)
             task.add_done_callback(self.calls.discard)
         self.set_state(memory)
@@ -60,10 +70,13 @@ class SwarmAgent(Agent[dict]):
     def _due(self, memory: dict, obs: dict) -> bool:
         if self.asking or obs["phase"] != "wave" or not obs["units"] or not obs["players"]:
             return False
-        asked = memory["llm"]["asked"]
-        # Ask on schedule, and right away when the rules just forced a retreat.
-        forced = memory["tactic"] == "retreat" and memory["tactic_since"] == obs["tick"]
-        return forced or asked is None or obs["tick"] - asked >= ASK_EVERY
+        llm = memory["llm"]
+        asked = llm["asked"]
+        if asked is None:
+            return True
+        if llm.get("pending"):
+            return obs["tick"] - asked >= EVENT_GAP
+        return obs["tick"] - asked >= ASK_EVERY
 
     async def _ask(self, model: str, messages: list, obs: dict) -> None:
         start = time.time()

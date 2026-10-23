@@ -1,6 +1,6 @@
 # Crosswind Swarm
 
-A browser FPS set in a bioluminescent alien forest. The creatures hunting you are run by Python agents on Cloudflare Workers. Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects built with the [Crosswind Python Agents SDK](https://crosswind.viswa.space) (`cf-agents`). The `ArenaAgent` runs the authoritative game at 20 Hz. Each `SwarmAgent` commands half the creatures. The browser sends inputs and draws what the server says happened.
+A browser FPS in a sunlit mecha-anime testing range. The mech squads hunting you are run by Python agents on Cloudflare Workers. Each room has one `ArenaAgent` and two `SwarmAgent`s, all Durable Objects built with the [Crosswind Python Agents SDK](https://crosswind.viswa.space) (`cf-agents`). The `ArenaAgent` runs the authoritative game at 20 Hz. Each `SwarmAgent` commands half the mechs. The browser sends inputs and draws what the server says happened.
 
 ## Run it locally
 
@@ -23,12 +23,12 @@ The URL carries the room (`?room=r-abc123`). Reloading rejoins the same `ArenaAg
 
 Anyone who opens the same room URL joins your squad. **Copy invite link** on the start screen copies it. The first five players get their own spawn slot on the central platform. Each player after the first adds two Strikers to every wave, and every two extra players add a Sentinel.
 
-- Score, waves and kills are shared. Allies show as explorers in cyan-lit suits, with a callsign and their health.
+- Score, waves and kills are shared. Allies show as cream-and-cyan mechs, with a callsign and their health.
 - A player who goes down stays down until the squad clears the wave, then comes back with 50 integrity. The match ends when every connected player is down.
 - The world pauses only when every player has paused. A paused player can't be targeted or hit, so pausing in co-op takes you out of the fight without stopping it.
 - Each tab is one player. A duplicated tab copies the original's player id, so when it joins, the server hands that player to the new tab and the original takes a fresh id.
 
-Controls: WASD to move, the mouse to aim, left click to fire, Space to jump, Shift to sprint, Esc to pause. F3 opens agent telemetry. F4 toggles the tactical overlay.
+Controls: WASD to move, the mouse to aim, left click to fire, hold right click to scope in (about 2.8× zoom, with slower mouse aim), Space to jump, Shift to sprint, Esc to pause. F3 opens agent telemetry. F4 toggles the tactical overlay.
 
 ## Deploy to Cloudflare
 
@@ -50,7 +50,7 @@ browser ──WebSocket──▶ ArenaAgent "{room}"            (Durable Object,
                           ├─ RPC decide(obs) ──▶ SwarmAgent "{room}-alpha"
                           │  every 500 ms   ◀── command (tactic + per-unit orders)
                           └─ RPC decide(obs) ──▶ SwarmAgent "{room}-bravo"
-                                                      │ every ~6 s, in the background
+                                                      │ every ~3.5 s, in the background
                                                       └─▶ Workers AI (env.AI): battle report in,
                                                           strategy directive + radio callout out
 debug overlay ──WebSocket──▶ SwarmAgent (read-only view of its memory)
@@ -113,27 +113,53 @@ The SwarmAgent's SDK state is its memory: last known player position and track, 
 
 ### LLM strategist (`src/strategist.py`)
 
-Each SwarmAgent asks a Workers AI model for a strategy about every 6 s while a wave is on, and right away when the rules force a retreat. `decide` starts the call in the background and returns at once, so the arena never waits on the model. The model gets a compact battle report:
+Each SwarmAgent asks a Workers AI model for a strategy while a wave is on. It asks right away when something happens, and otherwise every 3.5 s. The events that trigger a call are:
+
+- a wave starting
+- the swarm losing a unit
+- the other swarm switching tactic, which gives the two swarms their back-and-forth on the radio
+- the player dropping to 35 health or less
+- the rules forcing a retreat
+
+There is one call in flight at a time and at least 1 s between event-driven calls. An event that arrives during a call waits for the next one. `decide` starts the call in the background and returns at once, so the arena never waits on the model. The model gets a compact battle report:
 
 - its units by kind and health, and which tactics it has the units for
 - the players' positions, health and speed, and how much they camp
 - its trade record per tactic and recent outcomes
 - the other swarm's tactic and its last radio callout
+- the event that triggered the call, which the model is told to react to in its callout
 
-It answers with JSON constrained by a schema: a tactic (any of the nine above, or retreat), a flank side, an engagement range, a callout to the other swarm, and a one-line reason. `parse_directive` treats that reply as untrusted. It rejects anything off-schema, clamps the range to 9–22 m and trims the text. The validated directive goes into the swarm's memory and steers `select_tactic` for 12 s.
+It answers with JSON constrained by a schema: a tactic (any of the nine above, or retreat), a flank side, an engagement range, a piece of gear to use (or `none`), a callout to the other swarm, and a one-line reason. `parse_directive` treats that reply as untrusted. It rejects anything off-schema, clamps the range to 9–22 m and trims the text. The validated directive goes into the swarm's memory and steers `select_tactic` for 12 s.
 
 The rules stay in charge of safety:
 
 - A swarm at half strength or under 30% armor retreats whatever the model says.
 - The model can call a retreat only for a swarm that has lost units.
 - A tactic the swarm lacks the units for falls back to the rules' choice.
+- A directive can't replace a tactic younger than 3 s, so back-to-back replies don't make a swarm flip-flop. The directive takes effect once the 3 s are up.
 - Per-unit orders are still computed by `plan_orders` and validated by the arena.
 
-A missing, late, failed or invalid reply only means the rules choose, as they did before the strategist existed. Each decision event says whether the directive or the rules picked the tactic (`source`). The HUD shows the model's callout with an `LLM` badge when its directive is in force. F3 shows the model, call count, failures, latency, the last error, and the directive with its reason.
+A missing, late, failed or invalid reply only means the rules choose, as they did before the strategist existed. Each decision event says whether the directive or the rules picked the tactic (`source`). The HUD shows the model's callout with an `LLM` badge when its directive is in force. F3 shows the model, call count, failures, latency, what triggered the last call, the last error, and the directive with its reason.
 
-The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudflare.config.py`. Set it to `""` to turn the strategist off. In local dev, restart `npm run worker` after changing it. Workers AI runs on Cloudflare even in local dev, so `npm run worker` needs `npx wrangler login`, and calls count against your Workers AI usage. Its thinking mode is turned off: with it on, the model spent its whole token budget reasoning and never answered. A reply takes about 2 s. Each call is about 400 input and 100 output tokens, two swarms at one call per 6 s each.
+The model is `@cf/zai-org/glm-4.7-flash`, set by `STRATEGIST_MODEL` in `cloudflare.config.py`. Set it to `""` to turn the strategist off. In local dev, restart `npm run worker` after changing it. Workers AI runs on Cloudflare even in local dev, so `npm run worker` needs `npx wrangler login`, and calls count against your Workers AI usage. Its thinking mode is turned off: with it on, the model spent its whole token budget reasoning and never answered. A reply takes about 2 s. Each call is about 400 input and 100 output tokens, two swarms calling every 3.5 s or sooner on events. In a 45 s test wave that came to one call every 2.5–3 s per swarm.
 
 `@cf/zai-org/glm-5.3-flash` is stronger but not available on the Workers Free plan. Any Workers AI model that supports `response_format: json_schema` works.
+
+### Swarm gear
+
+Only the strategist uses gear. The rules never throw any, so with the LLM off the swarms fight with their guns alone. Each swarm's stock refills at the start of every wave:
+
+| Gear | Stock | What it does |
+| --- | --- | --- |
+| `frag` | 1 | Lands at the player's feet, leading a moving player by 0.6 s, and bursts 0.9 s later. It deals up to 30 damage within 5 m, falling to 9 at the edge, and walls block the blast. |
+| `smoke` | 2 | Lands halfway between the swarm and the player and makes a 4.5 m cloud for 10 s. Enemies can't see or fire through it, their own swarm's included. Players can still shoot into it. |
+| `trap` | 2 | Lands 4.5 m ahead of a moving player, or 4 m toward the swarm from a still one, and arms after 1 s. The first player to step within 1.2 m takes 30 damage. It folds away after 40 s. |
+
+`tactics._gear` aims the call and picks the nearest unit within 24 m of the spot to throw it. A call that no unit can reach yet waits, for as long as its directive stays fresh. Each directive gets one throw. The arena validates every throw like any other order: the unit must belong to the swarm and be past its warp-in, the swarm must have stock left, the spot must be inside the arena and within 24 m of the thrower, and each swarm waits 4 s between throws.
+
+On screen, gear arcs from the thrower's hands. A frag shows a red blast ring that blinks faster as its fuse runs down. When a frag that will reach you is in the air or on the ground, the HUD shows a blinking `GRENADE` tag and an arrow pointing to it. A trap shows its trigger ring and a beacon in the swarm's color. The kill feed names each throw.
+
+In two test matches against a player who stood still, the first gear call came within 9 s of the wave starting. Every call was a frag or a spike trap, and neither swarm chose smoke.
 
 ### What is stored, and what isn't
 
@@ -147,36 +173,53 @@ When a Durable Object is evicted, the arena restores the checkpoint on its next 
 
 ## Art direction
 
-The arena is a clearing in a bioluminescent forest. The server's level is unchanged: its boxes and ramps stay the collision truth, and the client draws organic stand-ins over them.
+A retro-futurist mecha anime look: a sunlit concrete weapons-testing range inside a military megastructure, fought over by squads of brightly painted combat frames. It is built to stay readable on a phone and in compressed video.
+
+The server's level is unchanged: its boxes and ramps stay the collision truth, and the client dresses them.
 
 | Collision | Drawn as |
 |---|---|
-| Perimeter walls | Layered cliffs (part of one terrain heightfield), weathered rock formations, hanging vines |
-| Platforms | Rock mesas with flat walkable tops, roots spilling over the rims, shelf fungi |
-| Pillars | Giant mushrooms with glowing gills under their caps and hanging tendrils, each lit from below |
-| Low cover | Fallen logs sunk into the soil |
-| Crates | Boulders crusted with crystals |
-| Ramps | Earth slopes that follow the walkable plane exactly, with roots down their sides |
+| Perimeter walls | Buttressed concrete with panel seams, a hazard band, a parapet, wall lamps, and a hangar door behind every spawn gate (lit in that swarm's color) |
+| Pillars | Steel columns on concrete footings, holding a gantry with the reactor ring hung over the central deck |
+| Platforms | The central command deck (with a painted emblem) and the two raised walkways along the sides, with vents and gold railings |
+| Low cover | Segmented concrete jersey barriers |
+| Crates | Cargo units with frames, stencilled panels and status lights |
+| Ramps | Steel ramps with grip bars and gold kerbs |
 
-Everything alive uses one material (`bioMaterial` in `web/src/bio.ts`), a `MeshStandardMaterial` with a patched shader:
+Beyond the walls are hangars, cooling towers, striped stacks, antenna masts and cranes, and a city skyline in the haze under an anime sky with flat, crisp clouds.
 
-- **Painted geometry:** each painted geometry carries per-vertex emission, sway and pulse phase.
-- **Shared clock:** grass, ferns and tendrils sway and glow pulses breathe off one `uTime` uniform, with no per-plant update loop.
-- **Veins drawn per pixel:** glowing veins and cracks are drawn per pixel, as the anti-aliased zero-crossings of warped sine waves in object space. They stay crisp on coarse meshes, where per-vertex patterns smear into blobs.
-- **Instancing:** vegetation is six instanced meshes.
+How it renders (`web/src/kit.ts`):
 
-The whole scene is about 90 draw calls and 620k triangles a frame.
+- **Cel shading:** everything uses `MeshToonMaterial` with a three-step light ramp. The shadow tone stays at about half brightness, so shaded faces keep their detail. Hard-surface parts are chamfered convex hulls (`plate`, `prism`), so every edge catches a highlight.
+- **Outlines:** mechs, the rifle and the architecture get an inverted-hull outline. It is pushed out along smoothed normals by a fixed fraction of the view distance, so it stays about the same width on screen, and it fades with the haze.
+- **Lighting:** a strong sun with a 2048 shadow map, a bright sky fill, light distance haze only, a light bloom that only energy and fire reach, and neutral tone mapping. There is no vignette and no dark grading.
+- **Cost:** about 145 draw calls and 160k triangles a frame with six mechs on the field.
 
-The palette keeps surfaces dark and matte (`#10142B`, `#173C45`). Saturated color is reserved for living light: cyan and turquoise for the forest and the player, orchid violet for some fungi and for swarm bravo, coral for swarm alpha and every hostile eye.
+Palette: warm ivory concrete (`#D8D5C8`), slate shadows (`#63748C`), steel machinery (`#788B9A`), navy joints (`#273347`), cyan energy (`#27DDF2`) and gold warnings (`#FFC857`). Swarm alpha's armor is vermilion (`#EF5145`), swarm bravo's is azure (`#2E86FF`), each with cream as the second color. Allies are cream and cyan.
 
-Swarm coordination shows on the creatures, driven by the server's `decision` events. When a swarm's agent changes tactic, its creatures pulse and release signalling spores in a pattern that matches the new tactic:
+The mechs (`web/src/mechs.ts`):
 
-- **Maneuvers** (flank, bait, crossfire, hit and run) pulse one creature at a time.
-- **Pressure tactics** pulse all at once.
-- **A retreat** ripples outward from the player.
-- **An ambush** goes dark, its markings dimmed to a quarter.
+- **Striker (Assault Frame):** a humanoid frame with a raked helmet, a single cyan visor slit and a gold V-fin.
+  - Its legs turn toward the direction of travel while its torso keeps aiming, so strafing reads.
+  - It leans into strafes, recoils when it fires, staggers when hit, and fires its rear thrusters in flanks, rushes, retreats and sudden sidesteps.
+- **Sentinel (Heavy Siege Frame):** navy and warm gray with orange markings, very broad shoulders in the swarm's color, twin cannons on each shoulder, oversized forearms and an amber reactor. Its cannons and reactor charge visibly between volleys, and it walks with heavy footfalls.
+- **Enemy chevron:** every enemy carries a chevron in its swarm's color, a constant size on screen. It flashes white when that mech fires, and hides during an ambush.
 
-Sentinel spore sacs swell between volleys and flare when they fire, timed from each Sentinel's own last shot.
+Effects (`web/src/fx.ts`):
+
+- **Enemy fire:** stretched bolts with a white core and a colored trail.
+- **Player shots:** a cyan beam with a bolt riding it, and a star-shaped muzzle flash.
+- **Armor hits:** sparks, a flash, and chips of plating knocked loose.
+- **Destruction:** the reactor flares, then the mech explodes. The explosion layers a flash, flat-shaded fireball shapes that cool from white to orange, radial speed lines, a shockwave and light-gray smoke, while the armor panels fly apart under Rapier physics.
+- **Spawns:** new mechs drop in on their thrusters.
+
+Swarm coordination shows on the mechs, driven by the server's `decision` events. When a swarm's agent changes tactic, its visors flash in sequence and the Strikers raise their rifles together; in an ambush the markings go dark. Flanking, rushing and retreating units fire their thrusters, and regrouping Strikers raise their shields.
+
+The HUD is a retro military display:
+
+- Navy glass panels with thin cyan borders, amber labels and mono numerals.
+- A segmented health bar and targeting brackets.
+- A wave readout with one pip per active hostile, colored by swarm.
 
 ## Protocol (v1)
 
@@ -202,11 +245,13 @@ Server to client:
 | `pong` | Answer to `ping`. |
 | `error` | `code`: `protocol` (wrong version), `pid` (bad player id) or `replaced` (this player joined from another connection). |
 
-The `ev` events are `spawn`, `death`, `proj` (a bolt was fired), `pend` (a bolt ended), `shot`, `hit`, `dmg` (a player took damage), `down`, `respawn`, `phase`, `wave`, `cleared`, `over`, `reset` and `decision` (a swarm command, with its status, RPC latency and age).
+The `ev` events are `spawn`, `death`, `proj` (a bolt was fired), `pend` (a bolt ended), `shot`, `hit`, `dmg` (a player took damage), `down`, `respawn`, `phase`, `wave`, `cleared`, `over`, `reset`, `decision` (a swarm command, with its status, RPC latency and age), and three for gear: `throw` (with the flight time in ticks), `deploy` (landed and live, with how many ticks it stays live) and `gend` (a frag burst, smoke cleared, or a trap sprang or folded, with the player it hit). The welcome snapshot lists gear already on the ground.
 
 The client predicts its own movement with `web/src/physics.ts`, a line-for-line port of `src/physics.py` (`tests/test_mirror.py` checks they agree). On each snapshot it resets to the server's state and replays the input frames the server hasn't applied. Any visual error decays over about 100 ms. Enemies and other players are drawn 100 ms in the past, interpolated between snapshots. Enemy bolts start at the muzzle and catch up to the server's present.
 
-Rapier handles the client's collision queries against the level, such as where a shot lands, and the fragments thrown off when a creature dies. Player movement uses the mirrored Python code instead of Rapier's character controller: the server can't run Rapier, and two different collision models would disagree on every wall and force constant corrections.
+The server uses numpy (Pyodide's build, pinned to 2.4.6, the only version on its package index) for queries that test many things at once: a ray against every level box, a shot against every enemy hit sphere, every bolt against every player and solid, and the spacing between squadmates. `move` stays scalar Python because it must match `physics.ts` line for line and resolves boxes one after another. numpy is slower than plain Python for these small arrays. A worst-case tick (14 enemies, 9 bolts) takes 0.37 ms natively instead of 0.23 ms, and a line-of-sight check takes 15 µs instead of 6 µs. Both are far inside the 50 ms tick. With numpy the upload is 7.8 MB, or 2.1 MB gzipped, under the 3 MB Free plan limit.
+
+Rapier handles the client's collision queries against the level, such as where a shot lands, and the armor panels and fragments thrown off when a mech is hit or destroyed. Player movement uses the mirrored Python code instead of Rapier's character controller: the server can't run Rapier, and two different collision models would disagree on every wall and force constant corrections.
 
 ## Tests
 
@@ -227,15 +272,16 @@ src/sim.py             The authoritative World
 src/swarm.py           SwarmAgent: decide() over RPC, memory in SDK state
 src/tactics.py         Deterministic swarm tactics, steered by the strategist's directive
 src/strategist.py      LLM strategist: prompt, battle report, reply validation
-src/physics.py         Movement, collision and ray casts
+src/physics.py         Movement and collision (scalar), ray and point queries (numpy)
 src/level.py           Arena geometry, sent to clients in welcome
 web/src/main.ts        Game loop: prediction, reconciliation, interpolation, events
 web/src/net.ts         AgentClient connection
-web/src/bio.ts         Palette, noise, the shared animated material, organic geometry builders
-web/src/arena.ts       The forest over the level's collision boxes, vegetation, lights, Rapier colliders
-web/src/creatures.ts   Procedural Striker, Sentinel and explorer bodies, and their animation
-web/src/weapon.ts      First-person organic energy rifle
-web/src/fx.ts          Fluid splashes, spore clouds, spore bolts, shots, emergence, death
+web/src/kit.ts         Palette, noise, toon materials, outlines, hard-surface geometry builders
+web/src/arena.ts       The facility over the level's collision boxes, the skyline, the sun, Rapier colliders
+web/src/mechs.ts       Procedural Striker and Sentinel frames (and allies), and their animation
+web/src/weapon.ts      First-person anime energy rifle
+web/src/fx.ts          Sparks, explosions, bolts, beams, drop-ins, destruction
+web/src/gear.ts        Swarm gear: thrown canisters, frag warnings, smoke clouds, spike traps
 web/src/debug.ts       F3 telemetry (connects to the SwarmAgents) and F4 overlay
 web/src/audio.ts       Synthesized sound
 ```
@@ -245,4 +291,5 @@ web/src/audio.ts       Synthesized sound
 - Rooms are joined by URL. There is no lobby, matchmaking or player cap. Players past the fifth share spawn slots.
 - Players don't collide with each other.
 - Enemies steer toward waypoints and slide along walls. There is no navmesh, so a unit can briefly hug a pillar before its detour kicks in.
+- A thrown canister's arc isn't tested against walls, so a throw can pass through a pillar on its way to the spot.
 - Workers freeze the clock during computation, so the server can't time its own ticks. Telemetry shows the achieved tick rate and the RPC latency instead.

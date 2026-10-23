@@ -3,9 +3,9 @@
 
 `select_tactic` picks what to do and `plan_orders` turns it into per-unit
 orders, one planner per tactic. When the SwarmAgent's LLM strategist has left
-a fresh directive in memory (see `strategist`), it steers `select_tactic`; the
-hard rules and the per-unit orders stay deterministic, and the arena still
-validates them.
+a fresh directive in memory (see `strategist`), it steers `select_tactic` and
+may call for gear, which `_gear` aims. The hard rules and the per-unit orders
+stay deterministic, and the arena still validates them.
 """
 
 import math
@@ -15,7 +15,8 @@ from level import BOXES, HALF, RALLY_POINTS
 from strategist import ENGAGE
 
 ENGAGE_MIN, ENGAGE_MAX = 9.0, 22.0
-SWITCH_TICKS = 120  # an engagement tactic lasts at least 6 s
+SWITCH_TICKS = 120  # the rules keep an engagement tactic at least 6 s
+LLM_HOLD = 60  # a strategist directive can't replace a tactic younger than 3 s
 RETREAT_TICKS = 70
 REGROUP_TICKS = 50
 HARASS_WAVE = 80  # ticks each hit-and-run wave spends going in
@@ -104,7 +105,7 @@ def decide(memory: dict, obs: dict) -> tuple[dict, dict]:
     if tactic != m["tactic"]:
         _switch(m, tactic, tick, why)
     orders, note = plan_orders(m, obs, units, player)
-    return m, _command(m, obs, orders, note)
+    return m, _command(m, obs, orders, note, _gear(m, obs, units, player))
 
 
 def select_tactic(m: dict, obs: dict, units: list, player: dict) -> tuple[str, str]:
@@ -136,8 +137,9 @@ def select_tactic(m: dict, obs: dict, units: list, player: dict) -> tuple[str, s
     # The strategist may call a retreat, but only for a swarm that has bled.
     if d and d["tactic"] == "retreat" and alive < m["peak"]:
         return "retreat", d["reason"]
-    # A directive newer than the current tactic may change it straight away.
-    fresh_order = d is not None and d["tick"] > m["tactic_since"]
+    # A directive newer than the current tactic may change it, once that tactic
+    # has had a moment to show (no flip-flopping on back-to-back replies).
+    fresh_order = d is not None and d["tick"] > m["tactic_since"] and age >= LLM_HOLD
     still_possible = current in strategist.available(units)
     if current in ENGAGE and still_possible and age < SWITCH_TICKS and not fresh_order:
         if current == "flank" and _flank_done(m, units):
@@ -487,10 +489,50 @@ def _flank_side(m: dict, obs: dict, px, pz, dx, dz, engage) -> int:
     return best
 
 
-def _command(m: dict, obs: dict, orders: dict, note: str) -> dict:
+def _gear(m: dict, obs: dict, units: list, player: dict) -> dict | None:
+    """The strategist's gear call, thrown once per directive by the nearest unit in range.
+
+    Until a unit is in range (and the swarm's last throw has cooled down), the
+    call waits, for as long as its directive stays fresh.
+    """
+    d = _directive(m, obs["tick"])
+    kit = obs.get("gear")
+    if not d or d["gear"] == "none" or not kit or m.get("gear_for") == d["tick"]:
+        return None
+    kind = d["gear"]
+    if kit["left"].get(kind, 0) <= 0 or not kit["ready"]:
+        return None
+    px, py, pz = player["pos"]
+    vx, vz = player["vel"]
+    cx, cz = _centroid(units)
+    if kind == "frag":
+        x, z = px + vx * 0.6, pz + vz * 0.6  # about where the player will be when it lands
+    elif kind == "smoke":
+        x, z = (px + cx) / 2, (pz + cz) / 2  # a screen between the swarm and the player
+    else:
+        speed = math.hypot(vx, vz)
+        if speed > 2:
+            x, z = px + vx / speed * 4.5, pz + vz / speed * 4.5  # ahead of the player
+        else:
+            n = _d(cx, cz, px, pz) or 1.0
+            x, z = px + (cx - px) / n * 4.0, pz + (cz - pz) / n * 4.0  # where they'd step to chase
+        if any(b[0] <= x <= b[3] and b[2] <= z <= b[5] and b[4] > py + 0.6 for b in BOXES):
+            x, z = px, pz  # that spot is on top of something: lay it where they stand
+    lim = HALF - 1.5
+    x, z = min(max(x, -lim), lim), min(max(z, -lim), lim)
+    near = [u for u in units if not u["spawning"] and _d(u["pos"][0], u["pos"][2], x, z) <= kit["range"] - 1]
+    if not near:
+        return None
+    thrower = min(near, key=lambda u: _d(u["pos"][0], u["pos"][2], x, z))
+    m["gear_for"] = d["tick"]
+    return {"kind": kind, "unit": thrower["id"], "at": [round(x, 2), round(z, 2)]}
+
+
+def _command(m: dict, obs: dict, orders: dict, note: str, gear: dict | None = None) -> dict:
     d = _directive(m, obs["tick"])
     if d and d["tactic"] != m["tactic"]:
         d = None  # the rules overrode it (a forced retreat, too few units): credit them
+    extra = {"gear": gear} if gear else {}
     return {
         "v": 1, "swarm": m["swarm"], "seq": obs["seq"], "tick": obs["tick"], "match": obs["match"],
         "tactic": m["tactic"], "formation": m["formation"], "note": note,
@@ -498,6 +540,7 @@ def _command(m: dict, obs: dict, orders: dict, note: str) -> dict:
         "source": "llm" if d else "rules",
         "callout": d["callout"] if d else "",
         "reason": d["reason"] if d else "",
+        **extra,
     }
 
 

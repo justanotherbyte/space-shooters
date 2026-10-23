@@ -15,6 +15,7 @@ ENGAGE = ("assault", "flank", "crossfire", "phalanx", "rush", "kite", "harass", 
 TACTICS = ENGAGE + ("retreat",)
 MIN_UNITS = {"flank": 3, "crossfire": 4, "phalanx": 3, "harass": 4, "bait": 3}
 SIDES = ("left", "right", "auto")
+GEAR = ("none", "frag", "smoke", "trap")
 ENGAGE_MIN, ENGAGE_MAX = 9.0, 22.0
 TTL = 240  # ticks (12 s) a directive stays in force
 
@@ -58,6 +59,22 @@ into ambushes, a player who wins close trades calls for kiting, and a nearly \
 dead player calls for a rush. Vary your approach when a tactic keeps losing \
 units.
 
+Gear: your swarm carries a few grenades and traps per wave (gear_left in the \
+report), thrown by whichever unit is within 24 m of the spot. Set gear to use \
+one now, or none to save it:
+- frag: a grenade at the player's feet that bursts a second after it lands. \
+It flushes a player who holds still behind cover; a moving player dodges it.
+- smoke: a smoke cloud between your units and the player for 10 seconds. \
+Nobody sees or shoots through it, so it covers an advance, a flank or a \
+retreat, but it also blinds your own fire.
+- trap: a spike trap on the player's path, armed for 40 seconds. It wounds \
+the player who steps on it. Lay it where they are heading, or where a bait \
+will lure them.
+Gear with none left is ignored. Save some for later in the wave.
+
+The report's event, when there is one, is what just happened: react to it, \
+and let your callout show it.
+
 Reply with JSON only. flank_side is from your swarm's point of view facing \
 the target and only matters for flank. engage_range is in meters, 9 to 22. \
 callout is one short radio line to your ally, in character, under 70 \
@@ -69,15 +86,16 @@ SCHEMA = {
         "tactic": {"type": "string", "enum": list(TACTICS)},
         "flank_side": {"type": "string", "enum": list(SIDES)},
         "engage_range": {"type": "number"},
+        "gear": {"type": "string", "enum": list(GEAR)},
         "callout": {"type": "string"},
         "reason": {"type": "string"},
     },
-    "required": ["tactic", "flank_side", "engage_range", "callout", "reason"],
+    "required": ["tactic", "flank_side", "engage_range", "gear", "callout", "reason"],
     "additionalProperties": False,
 }
 
 
-def battle_report(memory: dict, obs: dict) -> str:
+def battle_report(memory: dict, obs: dict, event: str | None = None) -> str:
     """A compact JSON summary of what the swarm sees and remembers."""
     units: dict[str, dict] = {}
     for u in obs["units"]:
@@ -112,17 +130,49 @@ def battle_report(memory: dict, obs: dict) -> str:
             "seconds": round((obs["tick"] - memory["tactic_since"]) / 20),
             "engage_range": memory["engage"],
         },
+        "gear_left": obs["gear"]["left"],
         "trade_scores": memory["scores"],
         "recent_outcomes": memory["outcomes"][-3:],
+        "event": event or "none",
     }
     return json.dumps(report, separators=(",", ":"))
 
 
-def messages(memory: dict, obs: dict) -> list[dict]:
+def messages(memory: dict, obs: dict, event: str | None = None) -> list[dict]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": battle_report(memory, obs)},
+        {"role": "user", "content": battle_report(memory, obs, event)},
     ]
+
+
+LOW_HP = 35
+
+
+def detect_event(seen: dict, prev_losses: int, memory: dict, obs: dict) -> str | None:
+    """What just happened that the strategist should react to, if anything.
+
+    `seen` keeps what was last observed (the wave, the other swarm's tactic,
+    whether the player was low), so each event fires once, when it happens.
+    """
+    events = []
+    if obs["phase"] == "wave" and seen.get("wave") != obs["wave"]:
+        events.append(f"wave {obs['wave']} started")
+        seen["wave"] = obs["wave"]
+    lost = obs["stats"]["losses"] - prev_losses
+    if lost > 0:
+        events.append(f"lost {lost} unit{'s' if lost > 1 else ''}")
+    allies = seen.setdefault("allies", {})
+    for name, a in obs["allies"].items():
+        if a["tactic"] in TACTICS and allies.get(name) not in (None, a["tactic"]):
+            events.append(f"{name} switched to {a['tactic']}")
+        allies[name] = a["tactic"]
+    low = any(p["hp"] <= LOW_HP for p in obs["players"])
+    if low and not seen.get("low"):
+        events.append("the player is nearly down")
+    seen["low"] = low
+    if memory["tactic"] == "retreat" and memory["tactic_since"] == obs["tick"]:
+        events.append("forced to retreat")
+    return "; ".join(events) or None
 
 
 def reply_text(result) -> str | None:
@@ -152,7 +202,7 @@ def parse_directive(text: str | None, tick: int) -> dict | None:
     if not isinstance(d, dict) or set(d) != set(SCHEMA["properties"]):
         return None
     tactic, side, rng = d["tactic"], d["flank_side"], d["engage_range"]
-    if tactic not in TACTICS or side not in SIDES:
+    if tactic not in TACTICS or side not in SIDES or d["gear"] not in GEAR:
         return None
     if isinstance(rng, bool) or not isinstance(rng, (int, float)) or not math.isfinite(rng):
         return None
@@ -162,6 +212,7 @@ def parse_directive(text: str | None, tick: int) -> dict | None:
         "tactic": tactic,
         "flank_side": side,
         "engage_range": round(min(max(float(rng), ENGAGE_MIN), ENGAGE_MAX), 1),
+        "gear": d["gear"],
         "callout": " ".join(d["callout"].split())[:70],
         "reason": " ".join(d["reason"].split())[:120],
         "tick": tick,

@@ -1,90 +1,99 @@
-// The first-person weapon: a living energy rifle, grown rather than built.
-// It lives in its own scene, drawn after the world with a cleared depth
-// buffer, so walls never cut into it. Each vertex's `phase` is its distance
-// along the barrel (0 at the stock, 1 at the muzzle), so a shot is a surge
-// of light travelling through the veins.
+// The first-person weapon: a retro anime energy rifle, armored casing over
+// dark mechanics, a cyan energy chamber, vents and warning decals. It lives in
+// its own scene, drawn after the world with a cleared depth buffer, so walls
+// never cut into it.
 import * as THREE from "three";
-import { PALETTE, bioMaterial, blob, glow, merge, noise, paint, smoothstep, tube, warp } from "./bio";
+import { PALETTE, canvasTexture, cylinder, glow, merge, outline, paint, plate, toonMaterial } from "./kit";
 import { PLAYER_COLOR } from "./protocol";
 
-const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
-const C = (hex: number) => new THREE.Color(hex);
-const BACK = 0.24, FRONT = -0.66;
-const along = (p: THREE.Vector3) => (BACK - p.z) / (BACK - FRONT);
+const { cream: CREAM, navy: NAVY, gold: GOLD } = PALETTE;
 
 export class Rifle {
   root = new THREE.Group();
   private model = new THREE.Group();
-  private skin = bioMaterial({ rough: 0.38, metal: 0.2, envIntensity: 1.2, vein: { color: PLAYER_COLOR, k: 1.1, freq: 60, width: 0.03 } });
-  private chamberMat = bioMaterial({ rough: 0.08, transparent: true, opacity: 0.42, envIntensity: 2 });
-  private core: THREE.Mesh;
-  private petals: THREE.Group;
-  private flash: THREE.Mesh;
+  private armor = toonMaterial();
+  private chamber = toonMaterial();
+  private flash: THREE.Sprite;
   private light = new THREE.PointLight(PLAYER_COLOR, 0, 6, 2);
-  private glowLight = new THREE.PointLight(PALETTE.turquoise, 0.6, 1.2, 2);
   private muzzlePoint = new THREE.Object3D();
   private kick = 0;
-  private surge = 1;
+  private charge = 1;
   private heat = 0;
   private bob = 0;
   private sway = new THREE.Vector2();
+  private aimK = 0;
+  private hip = new THREE.Vector3(0.26, -0.25, -0.4);
+  private hipRot = new THREE.Euler(0.06, 0.035, -0.04);
+  // Raised to the eye, the gold sight on top lines up with the screen's center.
+  private ads = new THREE.Vector3(0, -0.098, -0.3);
 
   constructor(rig: THREE.Object3D) {
-    const chitin = (p: THREE.Vector3) => {
-      const ring = smoothstep(0.55, 0.9, Math.abs(Math.sin(p.z * 46)));
-      return C(0x0f141f).lerp(C(0x253048), ring * 0.55 + noise(p.x * 30, p.y * 30, p.z * 30, 2) * 0.25);
-    };
-    const axisY = (z: number) => 0.012 * Math.sin((z - FRONT) / (BACK - FRONT) * Math.PI);
-    const shell = tube([V(0, -0.015, BACK), V(0, 0.01, 0.02), V(0, 0.012, -0.3), V(0, 0, FRONT)], (t) => 0.045 + 0.028 * Math.sin(Math.min(1, t * 1.6) * Math.PI) - t * 0.012, 28, 12);
-    const parts = [
-      paint(shell, { color: chitin, vein: 1, phase: along }),
-      // Ridged plates down the spine.
-      ...[0, 1, 2, 3, 4].map((i) => paint(warp(new THREE.ConeGeometry(0.022, 0.07, 3).rotateX(-1.2), (p) => p.set(p.x, p.y + 0.075, p.z + 0.12 - i * 0.05)), { color: 0x0b0f17, emit: (p) => glow(PLAYER_COLOR, smoothstep(0.1, 0.12, p.y) * 1.2), phase: along })),
-      // A grip that grows down out of the body, and a tendril wrapped round the barrel.
-      paint(tube([V(0, -0.03, 0.06), V(0, -0.1, 0.1), V(0.005, -0.18, 0.15)], (t) => 0.034 - t * 0.008, 8, 8), { color: chitin, vein: 0.4, phase: along }),
-      paint(tube(Array.from({ length: 14 }, (_, i) => {
-        const z = 0.0 - i * 0.045, a = i * 1.15;
-        return V(Math.cos(a) * 0.058, axisY(z) + Math.sin(a) * 0.058, z);
-      }), () => 0.0045, 60, 4), { color: 0x0c161e, emit: () => glow(PALETTE.turquoise, 0.45), phase: along }),
-    ];
-    this.model.add(new THREE.Mesh(merge(parts), this.skin));
-    // The translucent chamber, with a living core.
-    this.model.add(new THREE.Mesh(paint(blob(0.04, 0.036, 0.07, 2, 0.1, 9, 3).translate(0, 0.058, -0.06), { color: 0x6fd8cc, emit: glow(PALETTE.turquoise, 0.3) }), this.chamberMat));
-    this.core = new THREE.Mesh(paint(blob(0.025, 0.022, 0.05, 1, 0.2, 12, 4), { color: 0xffffff, emit: glow(PALETTE.turquoise, 3.2) }), this.skin);
-    this.core.position.set(0, 0.06, -0.06);
-    this.model.add(this.core);
-    // Petals around the muzzle, which flare open on a shot.
-    this.petals = new THREE.Group();
-    this.petals.position.set(0, 0, FRONT + 0.02);
-    for (let i = 0; i < 4; i++) {
-      const petal = new THREE.ConeGeometry(0.018, 0.09, 3);
-      petal.scale(1, 1, 0.35);
-      petal.rotateX(-Math.PI / 2 + 0.35);
-      petal.translate(0, 0.03, -0.035);
-      petal.rotateZ(i * Math.PI / 2 + Math.PI / 4);
-      this.petals.add(new THREE.Mesh(paint(petal, { color: 0x101622, emit: (p) => glow(PLAYER_COLOR, smoothstep(-0.02, -0.07, p.z) * 1.6), phase: 1 }), this.skin));
-    }
-    this.model.add(this.petals);
-    this.flash = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.05, 1),
-      new THREE.MeshBasicMaterial({ color: glow(PLAYER_COLOR, 4), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
-    );
-    this.flash.position.set(0, 0, FRONT - 0.06);
-    this.muzzlePoint.position.set(0, 0, FRONT - 0.04);
-    this.light.position.set(0, 0, FRONT - 0.1);
-    this.glowLight.position.set(0, 0.09, -0.06);
-    this.model.add(this.flash, this.muzzlePoint, this.light, this.glowLight);
+    const one = (g: THREE.BufferGeometry, color: number, emit?: THREE.Color) => paint(g, { color, emit });
+    const body = merge([
+      // Receiver and a big angular barrel shroud.
+      one(plate(0.12, 0.13, 0.42, { top: 0.9, bevel: 0.025 }).translate(0, 0, 0.02), CREAM),
+      one(plate(0.1, 0.11, 0.4, { top: 0.82, bevel: 0.02 }).translate(0, 0.005, -0.37), CREAM),
+      one(plate(0.07, 0.05, 0.44, { bevel: 0.012 }).translate(0, -0.07, -0.33), NAVY),
+      one(cylinder(0.026, 0.03, 0.18, 8).rotateX(Math.PI / 2).translate(0, 0.005, -0.62), NAVY),
+      one(plate(0.085, 0.065, 0.07, { bevel: 0.012 }).translate(0, 0.005, -0.72), NAVY),
+      // Vents along the top of the shroud.
+      ...[0, 1, 2, 3].map((i) => one(plate(0.07, 0.014, 0.022, { bevel: 0.004 }).translate(0, 0.066, -0.26 - i * 0.045), NAVY)),
+      // A sight rail with a gold sight.
+      one(plate(0.04, 0.025, 0.3, { bevel: 0.006 }).translate(0, 0.08, 0.0), NAVY),
+      one(plate(0.03, 0.04, 0.05, { bevel: 0.006 }).translate(0, 0.11, -0.02), GOLD),
+      // Grip, battery pack and stock.
+      one(plate(0.05, 0.16, 0.07, { bevel: 0.012 }).rotateX(0.35).translate(0, -0.12, 0.12), NAVY),
+      one(plate(0.07, 0.1, 0.12, { bevel: 0.012 }).translate(0, -0.1, -0.06), NAVY),
+      one(plate(0.08, 0.1, 0.16, { top: 0.8, bevel: 0.02 }).translate(0, -0.01, 0.3), CREAM),
+      // Gold warning decals on the casing.
+      one(plate(0.004, 0.03, 0.09, { bevel: 0.001 }).translate(-0.061, 0.03, 0.06), GOLD),
+      one(plate(0.004, 0.03, 0.09, { bevel: 0.001 }).translate(0.061, 0.03, 0.06), GOLD),
+      one(plate(0.004, 0.022, 0.05, { bevel: 0.001 }).translate(0.051, -0.02, -0.36), GOLD),
+    ]);
+    this.model.add(outline(new THREE.Mesh(body, this.armor), 0.0035, 0x10161f));
+    // The energy chamber, a window along the side of the receiver, and the muzzle ring.
+    const chamber = merge([
+      one(plate(0.012, 0.055, 0.17, { bevel: 0.004 }).translate(0.063, 0.0, -0.02), 0xffffff, glow(PALETTE.cyan, 2.2)),
+      one(plate(0.012, 0.055, 0.17, { bevel: 0.004 }).translate(-0.063, 0.0, -0.02), 0xffffff, glow(PALETTE.cyan, 2.2)),
+      one(plate(0.07, 0.012, 0.012, { bevel: 0.002 }).translate(0, 0.005, -0.757), 0xffffff, glow(PALETTE.cyan, 2.6)),
+    ]);
+    this.model.add(new THREE.Mesh(chamber, this.chamber));
+    // A four-point star for the muzzle flash.
+    const star = canvasTexture(128, 128, (g) => {
+      g.translate(64, 64);
+      const grad = g.createRadialGradient(0, 0, 0, 0, 0, 64);
+      grad.addColorStop(0, "rgba(255,255,255,1)");
+      grad.addColorStop(0.25, "rgba(150,240,255,0.9)");
+      grad.addColorStop(1, "rgba(39,221,242,0)");
+      g.fillStyle = grad;
+      g.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const r = i % 2 ? 12 : 64, a = (i / 8) * Math.PI * 2;
+        g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      g.fill();
+    });
+    this.flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: star, color: glow(0xffffff, 2.5), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+    this.flash.position.set(0, 0.005, -0.8);
+    this.muzzlePoint.position.set(0, 0.005, -0.77);
+    this.light.position.set(0, 0, -0.85);
+    this.model.add(this.flash, this.muzzlePoint, this.light);
+    // A key light that travels with the view, so the toon bands always read.
+    const key = new THREE.DirectionalLight(0xfff1dc, 2.2);
+    key.position.set(-0.6, 1, 0.4);
+    rig.add(key, key.target);
     this.root.add(this.model);
-    this.root.scale.setScalar(0.75);
-    this.root.position.set(0.19, -0.18, -0.32);
-    this.root.rotation.set(0.03, 0.07, -0.04); // converge on the crosshair
+    this.root.scale.setScalar(0.8);
+    this.root.position.copy(this.hip);
+    this.root.rotation.copy(this.hipRot); // toward the crosshair, kept clear of it
     rig.add(this.root);
   }
 
   fire() {
     this.kick = 1;
-    this.surge = 0;
+    this.charge = 0;
     this.heat = Math.min(1, this.heat + 0.15);
+    this.flash.material.rotation = Math.random() * 0.4 - 0.2;
   }
 
   look(dx: number, dy: number) {
@@ -92,40 +101,37 @@ export class Rifle {
     this.sway.y = THREE.MathUtils.clamp(this.sway.y + dy * 0.0004, -0.04, 0.04);
   }
 
+  /** How far the rifle is raised to scope in, from 0 (hip) to 1 (at the eye). */
+  aim(k: number) {
+    this.aimK = k;
+    this.root.position.lerpVectors(this.hip, this.ads, k);
+    this.root.rotation.set(this.hipRot.x * (1 - k), this.hipRot.y * (1 - k), this.hipRot.z * (1 - k));
+    this.root.visible = k < 0.92; // the scope overlay takes over
+  }
+
   muzzle(out: THREE.Vector3) {
     return this.muzzlePoint.getWorldPosition(out);
   }
 
   update(dt: number, speed: number, grounded: boolean) {
-    this.kick = Math.max(0, this.kick - dt * 8);
-    this.surge = Math.min(1, this.surge + dt * 7);
+    this.kick = Math.max(0, this.kick - dt * 9);
+    this.charge = Math.min(1, this.charge + dt * 5);
     this.heat = Math.max(0, this.heat - dt * 0.5);
     if (grounded) this.bob += dt * speed * 1.4;
-    const bobAmp = Math.min(1, speed / 7) * (grounded ? 1 : 0.2);
+    const bobAmp = Math.min(1, speed / 7) * (grounded ? 1 : 0.2) * (1 - this.aimK * 0.8);
     this.sway.multiplyScalar(Math.pow(0.002, dt));
-    const t = performance.now() / 1000;
-    const breathe = Math.sin(t * 1.6) * 0.004;
     const m = this.model;
     m.position.set(
       Math.sin(this.bob) * 0.012 * bobAmp + this.sway.x,
-      Math.abs(Math.cos(this.bob)) * 0.012 * bobAmp + this.sway.y - this.kick * 0.012 + breathe,
-      this.kick * 0.06,
+      Math.abs(Math.cos(this.bob)) * 0.012 * bobAmp + this.sway.y - this.kick * 0.015,
+      this.kick * 0.075,
     );
-    m.rotation.x = this.kick * 0.1;
-    // The surge of light rides the veins from stock to muzzle.
-    const u = this.skin.userData.u;
-    u.flow.value = this.surge * 1.15;
-    u.flowAmp.value = this.surge < 1 ? 3.5 : 0;
-    u.glow.value = 1 + this.heat * 0.8 + Math.sin(t * 2.2) * 0.12;
-    // The chamber contracts as it fires, then refills.
-    this.core.scale.setScalar(0.65 + 0.35 * this.surge + Math.sin(t * 4) * 0.04);
-    this.chamberMat.userData.u.glow.value = 1 + (1 - this.surge) * 3 + this.heat;
-    this.petals.scale.setScalar(1 + this.kick * 0.35);
-    this.petals.rotation.z += dt * (0.2 + this.kick * 4);
+    m.rotation.x = this.kick * 0.13;
+    // The chamber dims as it fires and refills, brighter as the barrel heats.
+    this.chamber.userData.u.glow.value = 0.5 + this.charge * 0.8 + this.heat * 0.8 + (this.kick > 0.6 ? 2 : 0);
     const flash = this.kick > 0.55 ? (this.kick - 0.55) / 0.45 : 0;
-    (this.flash.material as THREE.MeshBasicMaterial).opacity = flash;
-    this.flash.scale.setScalar(0.6 + flash * 1.3);
-    this.light.intensity = flash * 2.5;
-    this.glowLight.intensity = 0.5 + this.heat * 0.8 + (1 - this.surge) * 1.5;
+    this.flash.material.opacity = flash;
+    this.flash.scale.setScalar(0.12 + flash * 0.22);
+    this.light.intensity = flash * 3;
   }
 }

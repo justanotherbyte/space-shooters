@@ -6,17 +6,20 @@
     <title>Crosswind Swarm</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app"></div>
 
     <div id="hud">
-      <div id="crosshair"><i></i><i></i><i></i><i></i></div>
+      <div id="scope"><div class="lens"><i class="h"></i><i class="v"></i><b></b><span class="ticks"></span><em>×2.8</em></div></div>
+      <div id="crosshair"><i></i><i></i><i></i><i></i><b></b></div>
+      <div id="wavebar"><span id="wavebar-label">WAVE 00</span><div id="pips"></div></div>
       <div id="hitmarker"></div>
       <div id="damage"></div>
       <div id="dmg-dirs"></div>
+      <div id="nade" hidden><i></i><b>Grenade</b></div>
 
       <div id="stats" class="panel">
         <div><label>Wave</label><b id="wave">0</b></div>
@@ -54,13 +57,14 @@
       <div class="card">
         <p class="kicker">Python Agents on Cloudflare Workers</p>
         <h1>Crosswind<span>Swarm</span></h1>
-        <p class="lede">You've landed in a glowing alien forest. Two persistent SwarmAgents coordinate the creatures that hunt you through it, and a Python ArenaAgent runs the world at 20&nbsp;Hz. Survive the waves.</p>
+        <p class="lede">Test Range 3 is live. Two persistent SwarmAgents command the mech squads sent against you, and a Python ArenaAgent runs the range at 20&nbsp;Hz. Survive the waves.</p>
         <div class="meta"><span>Room <b id="room-name"></b></span><span id="link-state">Connecting…</span></div>
         <button id="deploy" disabled>Deploy</button>
         <button class="ghost invite" id="invite">Copy invite link</button>
         <dl class="keys">
           <div><dt>WASD</dt><dd>Move</dd></div>
           <div><dt>Mouse</dt><dd>Aim · fire</dd></div>
+          <div><dt>Right mouse</dt><dd>Scope</dd></div>
           <div><dt>Space</dt><dd>Jump</dd></div>
           <div><dt>Shift</dt><dd>Sprint</dd></div>
           <div><dt>Esc</dt><dd>Pause</dd></div>

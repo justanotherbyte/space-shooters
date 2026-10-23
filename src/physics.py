@@ -1,10 +1,16 @@
 """Movement, collision and ray casts against the level.
 
 web/src/physics.ts mirrors `move` line for line, so the client predicts its own
-movement exactly as the server will apply it. Change both together.
+movement exactly as the server will apply it. Change both together. `move`
+stays scalar Python on purpose: `push_out` resolves boxes one after another
+(each push moves the body before the next box is tested), and for one body a
+loop over ~25 boxes beats numpy's per-call overhead. The queries below test
+many boxes, spheres or points at once, and use numpy.
 """
 
 import math
+
+import numpy as np
 
 from level import BOXES, RAMPS
 
@@ -145,44 +151,40 @@ def step_player(body: Body, keys: int, yaw: float) -> None:
     move(body, wx, wz, INPUT_DT, bool(keys & JUMP))
 
 
-def ray_box(ox, oy, oz, dx, dy, dz, b, max_t):
-    """Distance along the ray to box `b`, or None (slab test)."""
-    t0, t1 = 0.0, max_t
-    for o, d, lo, hi in ((ox, dx, b[0], b[3]), (oy, dy, b[1], b[4]), (oz, dz, b[2], b[5])):
-        if abs(d) < 1e-12:
-            if o < lo or o > hi:
-                return None
-            continue
-        a, c = (lo - o) / d, (hi - o) / d
-        if a > c:
-            a, c = c, a
-        t0, t1 = max(t0, a), min(t1, c)
-        if t0 > t1:
-            return None
-    return t0
+# The level as arrays, for queries that test many boxes, spheres or points at once.
+BOX_LO = np.array([b[0:3] for b in BOXES], dtype=float)
+BOX_HI = np.array([b[3:6] for b in BOXES], dtype=float)
+_RAMPS = np.array([[r[0], r[1], r[2], r[3], r[4] == "x", r[5], r[6]] for r in RAMPS], dtype=float)
 
 
 def ray_level(ox, oy, oz, dx, dy, dz, max_t: float) -> float:
-    """Distance to the first level surface along a unit ray (max_t if none)."""
-    best = max_t
+    """Distance to the first level surface along a unit ray (max_t if none).
+
+    One slab test against every box at once.
+    """
+    o, d = np.array([ox, oy, oz]), np.array([dx, dy, dz])
+    flat = np.abs(d) < 1e-12  # parallel to a pair of slabs
+    step = np.where(flat, 1.0, d)
+    a, c = (BOX_LO - o) / step, (BOX_HI - o) / step
+    near = np.where(flat, -np.inf, np.minimum(a, c)).max(axis=1)
+    far = np.where(flat, np.inf, np.maximum(a, c)).min(axis=1)
+    outside = (flat & ((o < BOX_LO) | (o > BOX_HI))).any(axis=1)
+    entry = np.maximum(near, 0.0)
+    hit = ~outside & (entry <= np.minimum(far, max_t))
+    best = float(entry[hit].min()) if hit.any() else max_t
     if dy < 0:
         best = min(best, -oy / dy)  # the floor
-    for b in BOXES:
-        t = ray_box(ox, oy, oz, dx, dy, dz, b, best)
-        if t is not None and t < best:
-            best = t
     return best
 
 
-def ray_sphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r):
-    lx, ly, lz = cx - ox, cy - oy, cz - oz
-    t = lx * dx + ly * dy + lz * dz
-    if t < 0:
-        return None
-    d2 = lx * lx + ly * ly + lz * lz - t * t
-    if d2 > r * r:
-        return None
-    return t - math.sqrt(r * r - d2)
+def ray_spheres(o: np.ndarray, d: np.ndarray, centers: np.ndarray, radii: np.ndarray) -> np.ndarray:
+    """Distance along a unit ray to each sphere (inf where it misses)."""
+    rel = centers - o
+    t = rel @ d
+    d2 = (rel * rel).sum(axis=1) - t * t
+    r2 = radii * radii
+    hit = (t >= 0) & (d2 <= r2)
+    return np.where(hit, t - np.sqrt(np.maximum(r2 - d2, 0.0)), np.inf)
 
 
 def line_of_sight(ax, ay, az, bx, by, bz) -> bool:
@@ -193,14 +195,14 @@ def line_of_sight(ax, ay, az, bx, by, bz) -> bool:
     return ray_level(ax, ay, az, dx / n, dy / n, dz / n, n) >= n - 1e-6
 
 
-def inside_solid(x: float, y: float, z: float) -> bool:
-    if y <= 0:
-        return True
-    for b in BOXES:
-        if b[0] <= x <= b[3] and b[1] <= y <= b[4] and b[2] <= z <= b[5]:
-            return True
-    for r in RAMPS:
-        h = ramp_height(*r, x, z)
-        if h is not None and y <= h:
-            return True
-    return False
+def inside_solid(points: np.ndarray) -> np.ndarray:
+    """For each point (an (n, 3) array), whether it is inside the floor, a box or a ramp."""
+    p = np.atleast_2d(points)
+    solid = p[:, 1] <= 0
+    solid |= ((p[:, None, :] >= BOX_LO) & (p[:, None, :] <= BOX_HI)).all(axis=2).any(axis=1)
+    x, y, z = p[:, 0:1], p[:, 1:2], p[:, 2:3]
+    rx0, rz0, rx1, rz1, along_x, h0, h1 = _RAMPS.T
+    over = (x >= rx0) & (x <= rx1) & (z >= rz0) & (z <= rz1)
+    t = np.where(along_x > 0, (x - rx0) / (rx1 - rx0), (z - rz0) / (rz1 - rz0))
+    solid |= (over & (y <= h0 + (h1 - h0) * t)).any(axis=1)
+    return solid

@@ -104,7 +104,8 @@ export class Debug {
           <tr><td>player model</td><td>camping ${(m.profile?.camping ?? 0).toFixed(2)} · matches ${m.profile?.matches ?? 0}</td></tr>
           <tr><td>trade scores</td><td>assault ${m.scores?.assault} · flank ${m.scores?.flank}</td></tr>
           <tr><td>llm strategist</td><td>${m.llm?.model ? `${esc(m.llm.model)}<br>${m.llm.calls} calls · ${m.llm.failures} failed · ${m.llm.ms ?? "–"} ms last` : "off"}${m.llm?.error ? `<br><span class="bad">${esc(String(m.llm.error).slice(0, 90))}</span>` : ""}</td></tr>
-          ${m.directive ? `<tr><td>directive</td><td>${esc(m.directive.tactic)} · ${esc(m.directive.flank_side)} · ${m.directive.engage_range} m, ${(((m.last?.tick ?? m.directive.tick) - m.directive.tick) / 20).toFixed(0)}s old<br>${esc(m.directive.reason)}</td></tr>` : ""}
+          ${m.llm?.trigger ? `<tr><td>last trigger</td><td>${esc(m.llm.trigger)}</td></tr>` : ""}
+          ${m.directive ? `<tr><td>directive</td><td>${esc(m.directive.tactic)} · ${esc(m.directive.flank_side)} · ${m.directive.engage_range} m · gear ${esc(m.directive.gear ?? "none")}, ${(((m.last?.tick ?? m.directive.tick) - m.directive.tick) / 20).toFixed(0)}s old<br>${esc(m.directive.reason)}</td></tr>` : ""}
           <tr><td>last seen</td><td>${m.last_player ? m.last_player.pos.map((v: number) => v.toFixed(1)).join(", ") : "–"}</td></tr>
           <tr><td>recent</td><td><ol>${(m.recent ?? []).slice(-4).reverse().map((r: any) => `<li>${esc(r.tactic)}${r.why ? ` · ${esc(r.why)}` : ""}</li>`).join("")}</ol></td></tr>`
           : `<tr><td>memory</td><td>connecting to agent…</td></tr>`}

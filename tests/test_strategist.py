@@ -14,7 +14,7 @@ import strategist  # noqa: E402
 import tactics  # noqa: E402
 from sim import MODES, World  # noqa: E402
 
-GOOD = {"tactic": "flank", "flank_side": "left", "engage_range": 15, "callout": "Bravo, going left.", "reason": "Player is camping."}
+GOOD = {"tactic": "flank", "flank_side": "left", "engage_range": 15, "gear": "none", "callout": "Bravo, going left.", "reason": "Player is camping."}
 
 
 def reply(**changes):
@@ -28,7 +28,7 @@ def test_parse_directive():
                 reply(engage_range="far"), reply(engage_range=True), reply(callout=7),
                 json.dumps({**GOOD, "extra": 1}), json.dumps({k: v for k, v in GOOD.items() if k != "reason"})]:
         assert strategist.parse_directive(bad, 1) is None, bad
-    assert strategist.parse_directive('{"tactic":"assault","flank_side":"auto","engage_range":1e308,"callout":"x","reason":"y"}', 1)["engage_range"] == 22.0
+    assert strategist.parse_directive('{"tactic":"assault","flank_side":"auto","engage_range":1e308,"gear":"none","callout":"x","reason":"y"}', 1)["engage_range"] == 22.0
     clamped = strategist.parse_directive(reply(engage_range=2, callout="a\n" * 100, reason="b " * 200), 1)
     assert clamped["engage_range"] == 9.0 and len(clamped["callout"]) <= 70 and len(clamped["reason"]) <= 120
     assert "\n" not in clamped["callout"]
@@ -152,6 +152,61 @@ def test_unavailable_directive_falls_back():
     assert tactic in strategist.available(obs["units"]) and why == "too few units to crossfire"
     _, cmd = tactics.decide(m, obs)
     assert cmd["tactic"] != "crossfire" and cmd["source"] == "rules"
+
+
+def test_detect_event():
+    w, m = battle(3)
+    obs = w.observation("alpha", 2)
+    seen = {}
+    assert strategist.detect_event(seen, 0, m, obs) == "wave 1 started"
+    assert strategist.detect_event(seen, 0, m, obs) is None  # each event fires once
+    obs["stats"]["losses"] = 2
+    obs["allies"]["bravo"]["tactic"] = "flank"
+    seen["allies"]["bravo"] = "assault"
+    obs["players"][0]["hp"] = 20
+    event = strategist.detect_event(seen, 0, m, obs)
+    assert event == "lost 2 units; bravo switched to flank; the player is nearly down", event
+    obs["stats"]["losses"] = 0
+    assert strategist.detect_event(seen, 0, m, obs) is None  # still low: no repeat
+    assert '"event":"wave 1 started"' in strategist.battle_report(m, obs, "wave 1 started")
+
+
+def test_directive_hold():
+    w, m = battle(3)
+    m["directive"] = strategist.parse_directive(reply(tactic="flank"), w.tick)
+    m["tactic"], m["tactic_since"] = "assault", w.tick - 20  # just started
+    _, cmd = tactics.decide(m, w.observation("alpha", 2))
+    assert cmd["tactic"] == "assault", "a 1 s old tactic is held"
+    m["tactic_since"] = w.tick - tactics.LLM_HOLD - 1
+    m["directive"] = strategist.parse_directive(reply(tactic="flank"), w.tick)
+    _, cmd = tactics.decide(m, w.observation("alpha", 3))
+    assert cmd["tactic"] == "flank" and cmd["source"] == "llm"
+
+
+def test_gear_call():
+    w, m = battle(4)
+    for e in w.enemies.values():
+        e.body.x, e.body.z = 10.0, 10.0  # in throwing range of the player
+    for i, kind in enumerate(("frag", "smoke", "trap")):
+        m["directive"] = strategist.parse_directive(reply(tactic="assault", gear=kind), w.tick - i)
+        m, cmd = tactics.decide(m, w.observation("alpha", 2))
+        g = cmd["gear"]
+        unit = w.enemies[g["unit"]]
+        assert g["kind"] == kind and unit.swarm == "alpha"
+        assert physics.math.dist((unit.body.x, unit.body.z), g["at"]) <= 24
+        # One throw per directive.
+        m, cmd = tactics.decide(m, w.observation("alpha", 3))
+        assert "gear" not in cmd
+    # None left, or nobody in range: the call waits.
+    m["directive"] = strategist.parse_directive(reply(gear="frag"), w.tick - 3)
+    obs = w.observation("alpha", 4)
+    obs["gear"]["left"]["frag"] = 0
+    assert "gear" not in tactics.decide(m, obs)[1]
+    for e in w.enemies.values():
+        e.body.x, e.body.z = -28.0, -28.0
+    m, cmd = tactics.decide(m, w.observation("alpha", 5))
+    assert "gear" not in cmd and m.get("gear_for") != m["directive"]["tick"]
+    assert strategist.parse_directive(reply(gear="nuke"), 1) is None
 
 
 if __name__ == "__main__":

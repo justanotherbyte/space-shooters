@@ -56,4 +56,9 @@ export const sfx = {
   hurt() { tone("sine", 160, 50, 0.25, 0.4); hiss(0.15, 0.25, 900); },
   wave() { [440, 554, 659, 880].forEach((f, i) => tone("square", f, f, 0.14, 0.08, i * 0.09)); },
   warp() { tone("sine", 120, 900, 0.5, 0.06); },
+  toss(dist: number) { tone("triangle", 300, 900, 0.18, Math.max(0.02, 0.14 - dist * 0.004)); },
+  boom(dist: number) { const v = Math.max(0.08, 0.6 - dist * 0.012); hiss(1.1, v, 220, 0.6); tone("sine", 110, 28, 0.9, v); },
+  smoke(dist: number) { hiss(1.6, Math.max(0.03, 0.22 - dist * 0.005), 2400, 0.4); },
+  clank(dist: number) { tone("square", 900, 600, 0.06, Math.max(0.02, 0.12 - dist * 0.004)); },
+  snap() { tone("sawtooth", 1800, 200, 0.12, 0.3); hiss(0.2, 0.3, 4000); },
 };

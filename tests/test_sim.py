@@ -144,7 +144,7 @@ def test_coop():
     assert [p["id"] for p in w.observation("alpha", 1)["players"]] == ["a"]
     b.paused = False
     # One player down: the match goes on, and they come back when the wave is cleared.
-    w._damage(a, {"dmg": 500, "sw": "alpha", "src": -1, "x": 0, "z": 0, "vx": 0, "vz": 0})
+    w._damage(a, 500, "alpha", (0, 0))
     assert not a.alive and w.phase == "wave"
     w.enemies.clear()
     w.spawn_queue.clear()
@@ -155,10 +155,61 @@ def test_coop():
     for _ in range(80):
         w.step()
     w.remove_player("b")
-    w._damage(a, {"dmg": 500, "sw": "alpha", "src": -1, "x": 0, "z": 0, "vx": 0, "vz": 0})
+    w._damage(a, 500, "alpha", (0, 0))
     assert w.phase == "over"
     w.restart("m9")
     assert a.hp == 100 and b.hp == 100
+
+
+def test_gear():
+    w = World(seed=5)
+    p = w.add_player("p1")
+    for _ in range(140):
+        w.step()
+    w.enemies = {e.id: e for e in list(w.enemies.values())[:2]}
+    a, b = sorted(w.enemies.values(), key=lambda e: e.swarm != "alpha")[:2]
+    a.swarm, b.swarm = "alpha", "bravo"
+    for e in (a, b):
+        e.spawning = 0
+        e.cooldown = 1e9  # no bolts in this test
+        e.body.x, e.body.z = 9.0, 9.0
+    px, pz = p.body.x, p.body.z
+
+    def run(ticks):
+        for _ in range(ticks):
+            w.events.clear()
+            w.step()
+            yield from w.events
+
+    # Untrusted calls change nothing.
+    for bad in [None, {"kind": "nuke", "unit": a.id, "at": [px, pz]}, {"kind": "frag", "unit": b.id, "at": [px, pz]},
+                {"kind": "frag", "unit": True, "at": [px, pz]}, {"kind": "frag", "unit": a.id, "at": [-28, -28]},
+                {"kind": "frag", "unit": a.id, "at": ["x", 0]}]:
+        w._throw("alpha", bad)
+    assert not w.gear and w.stock["alpha"]["frag"] == 1
+    # A frag lands, then bursts next to the player.
+    hp = p.hp
+    w._throw("alpha", {"kind": "frag", "unit": a.id, "at": [px, pz]})
+    w._throw("alpha", {"kind": "smoke", "unit": a.id, "at": [px, pz]})  # cooling down
+    assert len(w.gear) == 1 and w.stock["alpha"] == {"frag": 0, "smoke": 2, "trap": 2}
+    events = list(run(80))
+    kinds = [e["k"] for e in events]
+    assert kinds.index("deploy") < kinds.index("gend") and not w.gear
+    assert p.hp < hp - 20 and any(e["k"] == "dmg" and e["sw"] == "alpha" for e in events)
+    # Smoke blocks sight through the cloud, not around it.
+    w._throw("alpha", {"kind": "smoke", "unit": a.id, "at": [0.0, 15.0]})
+    list(run(90))  # landed, and the swarm can throw again
+    y = w.gear[next(iter(w.gear))]["p"][1]
+    assert w.smoked((-10, y + 1, 15), (10, y + 1, 15)) and not w.smoked((-10, y + 1, 25), (10, y + 1, 25))
+    # A spike trap at the player's feet springs once armed.
+    w.gear.clear()
+    hp = p.hp
+    w._throw("alpha", {"kind": "trap", "unit": a.id, "at": [px, pz]})
+    events = list(run(60))
+    assert any(e["k"] == "gend" and e["hit"] == "p1" for e in events) and p.hp == hp - 30
+    # The stock refills with the next wave.
+    w._start_wave(w.wave + 1)
+    assert w.stock["alpha"] == {"frag": 1, "smoke": 2, "trap": 2}
 
 
 if __name__ == "__main__":

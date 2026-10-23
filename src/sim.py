@@ -3,22 +3,25 @@ runs (and is tested) outside Workers too.
 
 `World.step()` advances one fixed 50 ms tick. Players move by replaying their
 input frames, enemies follow swarm orders (or a local fallback when orders
-are late), and everything that happened lands in `World.events` for the
-arena to broadcast.
+are late), swarm gear (grenades, smoke, spike traps) lands and goes off, and
+everything that happened lands in `World.events` for the arena to broadcast.
 """
 
 import math
 import random
 from collections import deque
 
+import numpy as np
+
 from level import GATES, HALF, PLAYER_SPAWNS
 from physics import (
     Body,
+    floor_at,
     inside_solid,
     line_of_sight,
     move,
     ray_level,
-    ray_sphere,
+    ray_spheres,
     step_player,
 )
 
@@ -56,6 +59,19 @@ ARCHETYPES = {
         "hit": ((1.35, 1.05, 1.0), (2.6, 0.6, 1.5)),
     },
 }
+# Swarm gear, thrown only when the LLM strategist calls for it. Each swarm's
+# stock refills every wave. Times are in ticks.
+GEAR = {
+    "frag": {"stock": 1, "live": 18},  # bursts 0.9 s after it lands
+    "smoke": {"stock": 2, "live": 200},  # a 10 s cloud
+    "trap": {"stock": 2, "live": 800},  # armed for 40 s
+}
+GEAR_RANGE = 24.0
+GEAR_COOLDOWN = 80  # ticks between one swarm's throws
+FRAG_RADIUS, FRAG_DMG = 5.0, 30
+SMOKE_RADIUS, SMOKE_HEIGHT = 4.5, 1.2  # a sphere this far above where the canister lands
+TRAP_RADIUS, TRAP_DMG, TRAP_ARM = 1.2, 30, 20
+
 KINDS = ("striker", "sentinel")
 SWARMS = ("alpha", "bravo")
 # Append only: clients decode the mode by its index.
@@ -155,6 +171,10 @@ class World:
         self.callouts = {s: "" for s in SWARMS}  # each swarm's last radio line, heard by the other
         self.order_seq = {s: 0 for s in SWARMS}
         self.restored_hp: dict[str, int] = {}
+        self.gear: dict[int, dict] = {}
+        self.stock = {s: {k: g["stock"] for k, g in GEAR.items()} for s in SWARMS}
+        self.gear_ready = {s: 0 for s in SWARMS}  # the tick each swarm may throw again
+        self._spacing: dict[int, tuple[float, float]] = {}
 
     # Players
 
@@ -207,14 +227,18 @@ class World:
         best = ray_level(ox, oy, oz, dx, dy, dz, SHOT_RANGE)
         rewind = self._positions_at(render_tick)
         hit, mult = None, 1.0
-        for e in self.enemies.values():
-            if e.spawning:
-                continue
-            ex, ey, ez = rewind.get(e.id, (e.body.x, e.body.y, e.body.z))
-            for h, r, m in e.a["hit"]:
-                t = ray_sphere(ox, oy, oz, dx, dy, dz, ex, ey + h, ez, r)
-                if t is not None and t < best:
-                    best, hit, mult = t, e, m
+        # Every hit sphere of every enemy (rewound to what the shooter saw), in one test.
+        spheres = [
+            (e, m, (x, y + h, z), r)
+            for e in self.enemies.values() if not e.spawning
+            for x, y, z in [rewind.get(e.id, (e.body.x, e.body.y, e.body.z))]
+            for h, r, m in e.a["hit"]
+        ]
+        if spheres:
+            t = ray_spheres(np.array([ox, oy, oz]), np.array([dx, dy, dz]), np.array([c for *_, c, _ in spheres]), np.array([r for *_, r in spheres]))
+            i = int(np.argmin(t))
+            if t[i] < best:
+                best, hit, mult = float(t[i]), spheres[i][0], spheres[i][1]
         end = [r2(ox + dx * best), r2(oy + dy * best), r2(oz + dz * best)]
         self.events.append({"k": "shot", "pid": pid, "o": [r2(ox), r2(oy), r2(oz)], "e": end})
         if hit is not None:
@@ -275,8 +299,7 @@ class World:
             if other == swarm:
                 continue
             mine = [e for e in self.enemies.values() if e.swarm == other]
-            cx = sum(e.body.x for e in mine) / len(mine) if mine else 0.0
-            cz = sum(e.body.z for e in mine) / len(mine) if mine else 0.0
+            cx, cz = np.array([[e.body.x, e.body.z] for e in mine]).mean(axis=0) if mine else (0.0, 0.0)
             allies[other] = {
                 "tactic": self.tactics[other], "alive": len(mine), "centroid": [r2(cx), r2(cz)],
                 "callout": self.callouts[other],
@@ -285,6 +308,7 @@ class World:
             "v": 1, "swarm": swarm, "seq": seq, "tick": self.tick, "match": self.match,
             "wave": self.wave, "phase": self.phase, "units": units, "players": players,
             "allies": allies, "stats": dict(self.swarm_stats[swarm]),
+            "gear": {"left": dict(self.stock[swarm]), "ready": self.tick >= self.gear_ready[swarm], "range": GEAR_RANGE},
         }
 
     def apply_orders(self, swarm: str, cmd: dict) -> str:
@@ -324,7 +348,38 @@ class World:
                 path = clean["path"]
                 if len(path) > 1 and _dist2(e.body.x, e.body.z, *path[1]) < _dist2(*path[0], *path[1]):
                     e.path_idx = 1
+        if "gear" in cmd:
+            self._throw(swarm, cmd["gear"])
         return "applied"
+
+    def _throw(self, swarm: str, gear) -> None:
+        """One of the swarm's units throws gear at a spot, if the rules allow it."""
+        if not isinstance(gear, dict) or self.phase != "wave":
+            return
+        kind, uid, at = gear.get("kind"), gear.get("unit"), gear.get("at")
+        e = self.enemies.get(uid) if isinstance(uid, int) and not isinstance(uid, bool) else None
+        if kind not in GEAR or e is None or e.swarm != swarm or e.spawning:
+            return
+        if self.stock[swarm][kind] <= 0 or self.tick < self.gear_ready[swarm]:
+            return
+        if not isinstance(at, list) or len(at) != 2:
+            return
+        x, z = finite(at[0], -HALF + 1, HALF - 1), finite(at[1], -HALF + 1, HALF - 1)
+        if x is None or z is None or _dist2(e.body.x, e.body.z, x, z) > GEAR_RANGE**2:
+            return
+        self.stock[swarm][kind] -= 1
+        self.gear_ready[swarm] = self.tick + GEAR_COOLDOWN
+        b = e.body
+        y = floor_at(x, z, 50.0)  # the top surface there
+        # shortcut: the arc isn't tested against walls on the way; add a sweep if throws clip pillars.
+        flight = round((0.5 + math.sqrt(_dist2(b.x, b.z, x, z)) / 20) * TICK_RATE)
+        gid = self.next_id
+        self.next_id += 1
+        self.gear[gid] = {"kind": kind, "sw": swarm, "p": (x, y, z), "land": self.tick + flight, "end": None}
+        self.events.append({
+            "k": "throw", "id": gid, "kind": kind, "sw": swarm, "src": e.id,
+            "o": [r2(b.x), r2(b.y + b.height * 0.8), r2(b.z)], "p": [r2(x), r2(y), r2(z)], "t": flight,
+        })
 
     @staticmethod
     def _clean_order(order: dict) -> dict | None:
@@ -360,9 +415,11 @@ class World:
         self._check_over()  # an alive player may have left a squad that is all down
         if self.phase != "over":
             self._step_phase()
+            self._spacing = self._separation()
             for e in list(self.enemies.values()):
                 self._step_enemy(e)
             self._step_projectiles()
+            self._step_gear()
         self.history.append(
             (self.tick, {e.id: (e.body.x, e.body.y, e.body.z) for e in self.enemies.values()})
         )
@@ -412,6 +469,7 @@ class World:
         # Alternate swarms so both get a mix, sentinels first so they lead.
         self.spawn_queue = [(k, SWARMS[i % 2]) for i, k in enumerate(kinds)]
         self.spawn_timer = 0.0
+        self.stock = {s: {k: g["stock"] for k, g in GEAR.items()} for s in SWARMS}
         self._set_phase("wave")
         self.events.append({"k": "wave", "wave": wave, "count": len(kinds)})
 
@@ -498,17 +556,9 @@ class World:
             wz += lx / ln * s
 
         # Keep some space from squadmates.
-        for o in self.enemies.values():
-            if o is e:
-                continue
-            ox, oz = b.x - o.body.x, b.z - o.body.z
-            d2 = ox * ox + oz * oz
-            reach = b.radius + o.body.radius + 1.0
-            if 1e-6 < d2 < reach * reach:
-                d = math.sqrt(d2)
-                push = (reach - d) / reach * speed * 1.5
-                wx += ox / d * push
-                wz += oz / d * push
+        sx, sz = self._spacing.get(e.id, (0.0, 0.0))
+        wx += sx * speed * 1.5
+        wz += sz * speed * 1.5
 
         # Stuck against geometry: slide sideways for a moment.
         if e.detour:
@@ -542,7 +592,7 @@ class World:
         if d > e.a["range"]:
             return
         mx, my, mz = b.x, b.y + b.height * 0.72, b.z
-        if not line_of_sight(mx, my, mz, tb.x, tb.y + 1.1, tb.z):
+        if not line_of_sight(mx, my, mz, tb.x, tb.y + 1.1, tb.z) or self.smoked((mx, my, mz), (tb.x, tb.y + 1.1, tb.z)):
             e.cooldown = 0.25
             return
         suppress = e.mode == "suppress"
@@ -579,26 +629,50 @@ class World:
                 "o": [r2(mx), r2(my), r2(mz)], "v": [r2(proj["vx"]), r2(proj["vy"]), r2(proj["vz"])],
             })
 
+    def _separation(self) -> dict[int, tuple[float, float]]:
+        """Each enemy's push away from squadmates closer than their radii plus 1 m.
+
+        The push points away from each neighbor, scaled by how deep inside that
+        reach it is (0 at the edge, 1 on top of it), summed over neighbors.
+        """
+        es = list(self.enemies.values())
+        if len(es) < 2:
+            return {}
+        pos = np.array([[e.body.x, e.body.z] for e in es])
+        rad = np.array([e.body.radius for e in es])
+        away = pos[:, None, :] - pos[None, :, :]  # from each neighbor to me
+        dist = np.sqrt((away * away).sum(axis=2))
+        reach = rad[:, None] + rad[None, :] + 1.0
+        depth = np.where((dist > 1e-3) & (dist < reach), (reach - dist) / reach, 0.0)
+        push = (away * (depth / np.maximum(dist, 1e-9))[:, :, None]).sum(axis=1)
+        return {e.id: (float(push[i, 0]), float(push[i, 1])) for i, e in enumerate(es)}
+
     def _step_projectiles(self) -> None:
-        for pid, pr in list(self.projectiles.items()):
+        """Move every bolt in three substeps; a bolt stops at the first player or solid it meets."""
+        if not self.projectiles:
+            return
+        ids = list(self.projectiles)
+        prs = [self.projectiles[i] for i in ids]
+        pos = np.array([[pr["x"], pr["y"], pr["z"]] for pr in prs])
+        vel = np.array([[pr["vx"], pr["vy"], pr["vz"]] for pr in prs])
+        targets = [p for p in self.players.values() if p.targetable]
+        hit = np.full(len(ids), -1)  # index into targets
+        moving = np.ones(len(ids), dtype=bool)
+        for _ in range(3):
+            pos[moving] += vel[moving] * (DT / 3)
+            for k, p in enumerate(targets):
+                b = p.body
+                cy = np.clip(pos[:, 1], b.y + 0.2, b.y + 1.6)  # nearest point on the player's body axis
+                near = (pos[:, 0] - b.x) ** 2 + (pos[:, 2] - b.z) ** 2 + (pos[:, 1] - cy) ** 2 < 0.6 * 0.6
+                hit[moving & near & (hit < 0)] = k
+            moving &= (hit < 0) & ~inside_solid(pos)
+        solid = inside_solid(pos)
+        for i, pid in enumerate(ids):
+            pr = prs[i]
             pr["ttl"] -= DT
-            hit_player = None
-            for _ in range(3):
-                pr["x"] += pr["vx"] * DT / 3
-                pr["y"] += pr["vy"] * DT / 3
-                pr["z"] += pr["vz"] * DT / 3
-                for p in self.players.values():
-                    if not p.targetable:
-                        continue
-                    b = p.body
-                    cy = min(max(pr["y"], b.y + 0.2), b.y + 1.6)
-                    if _dist2(pr["x"], pr["z"], b.x, b.z) + (pr["y"] - cy) ** 2 < 0.6 * 0.6:
-                        hit_player = p
-                        break
-                if hit_player or inside_solid(pr["x"], pr["y"], pr["z"]):
-                    break
-            ended = hit_player or pr["ttl"] <= 0 or inside_solid(pr["x"], pr["y"], pr["z"])
-            if not ended:
+            pr["x"], pr["y"], pr["z"] = (float(v) for v in pos[i])
+            hit_player = targets[hit[i]] if hit[i] >= 0 else None
+            if not (hit_player or pr["ttl"] <= 0 or solid[i]):
                 continue
             del self.projectiles[pid]
             self.events.append({
@@ -606,14 +680,54 @@ class World:
                 "hit": hit_player.pid if hit_player else None,
             })
             if hit_player:
-                self._damage(hit_player, pr)
+                src = self.enemies.get(pr["src"])
+                frm = (src.body.x, src.body.z) if src else (pr["x"] - pr["vx"], pr["z"] - pr["vz"])
+                self._damage(hit_player, pr["dmg"], pr["sw"], frm)
 
-    def _damage(self, p: Player, pr: dict) -> None:
-        p.hp = max(0, p.hp - pr["dmg"])
-        self.swarm_stats[pr["sw"]]["dealt"] += pr["dmg"]
-        src = self.enemies.get(pr["src"])
-        frm = [r2(src.body.x), r2(src.body.z)] if src else [r2(pr["x"] - pr["vx"]), r2(pr["z"] - pr["vz"])]
-        self.events.append({"k": "dmg", "pid": p.pid, "amt": pr["dmg"], "hp": p.hp, "from": frm, "sw": pr["sw"]})
+    def _step_gear(self) -> None:
+        """Land thrown gear, then let it act: frags burst, smoke lingers, traps wait for a player."""
+        for gid, g in list(self.gear.items()):
+            x, y, z = g["p"]
+            if g["end"] is None:
+                if self.tick < g["land"]:
+                    continue
+                g["end"] = self.tick + GEAR[g["kind"]]["live"]
+                self.events.append({"k": "deploy", "id": gid, "kind": g["kind"], "sw": g["sw"], "p": [r2(x), r2(y), r2(z)], "t": GEAR[g["kind"]]["live"]})
+                continue
+            hit = None
+            if g["kind"] == "trap" and self.tick >= g["land"] + TRAP_ARM:
+                hit = next((
+                    p for p in self.players.values()
+                    if p.targetable and _dist2(p.body.x, p.body.z, x, z) < (TRAP_RADIUS + PLAYER_RADIUS) ** 2 and abs(p.body.y - y) < 0.8
+                ), None)
+            if hit is None and self.tick < g["end"]:
+                continue
+            del self.gear[gid]
+            self.events.append({"k": "gend", "id": gid, "kind": g["kind"], "p": [r2(x), r2(y), r2(z)], "hit": hit.pid if hit else None})
+            if hit:
+                self._damage(hit, TRAP_DMG, g["sw"], (x, z))
+            if g["kind"] == "frag":
+                for p in self.players.values():
+                    b = p.body
+                    d = math.sqrt(_dist2(b.x, b.z, x, z) + (b.y + 1.0 - y - 0.5) ** 2)
+                    if p.targetable and d < FRAG_RADIUS and line_of_sight(x, y + 0.5, z, b.x, b.y + 1.0, b.z):
+                        self._damage(p, round(FRAG_DMG * (1 - 0.7 * d / FRAG_RADIUS)), g["sw"], (x, z))
+
+    def smoked(self, a: tuple, b: tuple) -> bool:
+        """Whether the segment from a to b passes through a smoke cloud."""
+        clouds = [g["p"] for g in self.gear.values() if g["kind"] == "smoke" and g["end"] is not None]
+        if not clouds:
+            return False
+        c = np.array(clouds) + (0.0, SMOKE_HEIGHT, 0.0)
+        a, ab = np.array(a), np.subtract(b, a)
+        t = np.clip((c - a) @ ab / max(float(ab @ ab), 1e-9), 0.0, 1.0)
+        nearest = a + t[:, None] * ab
+        return bool((((c - nearest) ** 2).sum(axis=1) < SMOKE_RADIUS**2).any())
+
+    def _damage(self, p: Player, amt: int, sw: str, frm: tuple[float, float]) -> None:
+        p.hp = max(0, p.hp - amt)
+        self.swarm_stats[sw]["dealt"] += amt
+        self.events.append({"k": "dmg", "pid": p.pid, "amt": amt, "hp": p.hp, "from": [r2(frm[0]), r2(frm[1])], "sw": sw})
         if p.hp <= 0:
             self.events.append({"k": "down", "pid": p.pid})
             self._check_over()
@@ -631,6 +745,7 @@ class World:
         self.match = match
         self.enemies.clear()
         self.projectiles.clear()
+        self.gear.clear()
         self.spawn_queue.clear()
         self.history.clear()
         self.wave = self.score = self.kills = 0
@@ -698,6 +813,11 @@ class World:
             {"id": i, "sw": pr["sw"], "kind": self.enemies[pr["src"]].kind if pr["src"] in self.enemies else "striker",
              "o": [r2(pr["x"]), r2(pr["y"]), r2(pr["z"])], "v": [r2(pr["vx"]), r2(pr["vy"]), r2(pr["vz"])]}
             for i, pr in self.projectiles.items()
+        ]
+        snap["gear"] = [
+            {"id": i, "kind": g["kind"], "sw": g["sw"], "p": [r2(v) for v in g["p"]], "t": g["end"] - self.tick}
+            for i, g in self.gear.items()
+            if g["end"] is not None
         ]
         snap["orders"] = {
             str(e.id): {"mode": e.mode, "role": e.role, "path": [list(p) for p in e.order["path"]]}

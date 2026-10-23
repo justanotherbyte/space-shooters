@@ -10,6 +10,7 @@ export const MODES = ["fallback", "assault", "suppress", "flank", "retreat", "re
 export type Kind = (typeof KINDS)[number];
 export type Swarm = (typeof SWARMS)[number];
 export type Mode = (typeof MODES)[number];
+export type GearKind = "frag" | "smoke" | "trap";
 
 export interface Level {
   half: number;
@@ -44,6 +45,10 @@ export type GameEvent =
   | { k: "reset"; match: string }
   | { k: "down"; pid: string }
   | { k: "respawn"; pid: string }
+  // Swarm gear: thrown (t = flight ticks), landed and live (t = ticks it stays live), then gone.
+  | { k: "throw"; id: number; kind: GearKind; sw: Swarm; src: number; o: number[]; p: number[]; t: number }
+  | { k: "deploy"; id: number; kind: GearKind; sw: Swarm; p: number[]; t: number }
+  | { k: "gend"; id: number; kind: GearKind; p: number[]; hit: string | null }
   | {
       k: "decision"; sw: Swarm; seq: number | null; status: string; tactic: string | null;
       formation: string | null; note: string | null; engage: number | null; ms: number; age: number;
@@ -65,6 +70,7 @@ export interface Snapshot {
   st?: { hz: number; lat: Record<Swarm, number>; dropped: Record<Swarm, number>; conns: number };
   projectiles?: { id: number; sw: Swarm; kind: Kind; o: number[]; v: number[] }[];
   orders?: Record<string, Order>;
+  gear?: { id: number; kind: GearKind; sw: Swarm; p: number[]; t: number }[];
 }
 
 export interface Welcome {
@@ -106,6 +112,6 @@ export type ClientMessage =
   | { t: "restart" }
   | { t: "ping"; c: number };
 
-// Each swarm's bioluminescent signature; the player's light is the forest's cyan.
-export const SWARM_COLORS: Record<Swarm, number> = { alpha: 0xff7957, bravo: 0xa66bff };
-export const PLAYER_COLOR = 0x42e8d1;
+// Each swarm's armor color: vermilion and azure. The player's energy weapons are cyan.
+export const SWARM_COLORS: Record<Swarm, number> = { alpha: 0xef5145, bravo: 0x2e86ff };
+export const PLAYER_COLOR = 0x27ddf2;
